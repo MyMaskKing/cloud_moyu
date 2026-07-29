@@ -240,9 +240,27 @@ async fn resize_web_tab(
 async fn close_web_tab(app: AppHandle, id: String) -> Result<(), String> {
     let label = tab_label(&id);
     if let Some(win) = app.get_webview_window(&label) {
-        win.close().map_err(|e| e.to_string())?;
+        // 用 destroy() 强制销毁,绕过窗口自身的 CloseRequested 拦截
+        // (open_web_tab 里挂了 prevent_close 用来处理"用户点系统 ✕",不能拦到后端主动关闭)
+        win.destroy().map_err(|e| e.to_string())?;
     }
     forget_tab(&label);
+    Ok(())
+}
+
+/// 兜底:关掉所有 web-tab 子窗口(用于"最后一个标签关闭后清空幽灵画面")
+#[tauri::command]
+async fn close_all_web_tabs(app: AppHandle) -> Result<(), String> {
+    let labels = WEB_TABS.lock().map(|g| g.clone()).unwrap_or_default();
+    for l in labels {
+        if let Some(win) = app.get_webview_window(&l) {
+            // 同上:必须 destroy 才能真正关掉,close 会被拦截
+            let _ = win.destroy();
+        }
+    }
+    if let Ok(mut g) = WEB_TABS.lock() {
+        g.clear();
+    }
     Ok(())
 }
 
@@ -633,6 +651,7 @@ pub fn run() {
             open_web_tab,
             resize_web_tab,
             close_web_tab,
+            close_all_web_tabs,
             set_web_tab_visible,
             web_tab_exists,
             web_tab_bounds,

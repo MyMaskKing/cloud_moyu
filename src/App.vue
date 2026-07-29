@@ -87,7 +87,16 @@ watch(bossKey, () => {
 useMouseAutoHide(autoHide, autoHideDelay);
 
 async function minimize() { await win.minimize(); }
+async function toggleMaximize() { await win.toggleMaximize(); }
 async function close() { await win.close(); }
+
+// 无边框窗口边缘 8 方向 resize 触发器
+type ResizeDir = "North" | "South" | "East" | "West" | "NorthEast" | "NorthWest" | "SouthEast" | "SouthWest";
+async function startResize(dir: ResizeDir, e: MouseEvent) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  await win.startResizeDragging(dir);
+}
 
 function onOpacityInput(e: Event) {
   const v = Number((e.target as HTMLInputElement).value);
@@ -219,7 +228,9 @@ function closeTabById(id: string) {
     address.value = tabs.active.url;
     activateVisual(tabs.active.id);
   } else {
+    // 关到空了:兜底把所有可能残留的 web-tab 全部关闭(hide+close),不留幽灵画面
     address.value = "";
+    invoke("close_all_web_tabs").catch(() => {});
   }
 }
 
@@ -607,6 +618,17 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="shell" :class="{ 'is-fullscreen': activeTab?.mode === 'fullscreen' }" @contextmenu="openContextMenu">
+    <!-- 无边框窗口 8 方向拉伸手柄(不在 fullscreen 状态才显示) -->
+    <template v-if="activeTab?.mode !== 'fullscreen'">
+      <div class="resize-edge n"  @mousedown="(e) => startResize('North', e)"></div>
+      <div class="resize-edge s"  @mousedown="(e) => startResize('South', e)"></div>
+      <div class="resize-edge w"  @mousedown="(e) => startResize('West', e)"></div>
+      <div class="resize-edge e"  @mousedown="(e) => startResize('East', e)"></div>
+      <div class="resize-corner nw" @mousedown="(e) => startResize('NorthWest', e)"></div>
+      <div class="resize-corner ne" @mousedown="(e) => startResize('NorthEast', e)"></div>
+      <div class="resize-corner sw" @mousedown="(e) => startResize('SouthWest', e)"></div>
+      <div class="resize-corner se" @mousedown="(e) => startResize('SouthEast', e)"></div>
+    </template>
     <!-- 顶部自定义标题栏 -->
     <header class="titlebar" data-tauri-drag-region>
       <span class="brand" data-tauri-drag-region>🐟 云摸鱼</span>
@@ -632,6 +654,7 @@ onBeforeUnmount(() => {
         <button class="btn" @click="triggerBossKey" title="老板键">🚨</button>
         <button class="btn" @click="showSettings = !showSettings" title="设置">⚙</button>
         <button class="btn" @click="minimize" title="最小化">—</button>
+        <button class="btn" @click="toggleMaximize" title="最大化 / 还原">▢</button>
         <button class="btn close" @click="close" title="关闭">✕</button>
       </div>
     </header>
@@ -963,4 +986,18 @@ html, body, #app {
   transition: background 0.15s;
 }
 .fs-back:hover { background: #388bfd; }
+
+/* 无边框窗口边缘拉伸手柄 */
+.resize-edge, .resize-corner {
+  position: absolute;
+  z-index: 100;
+}
+.resize-edge.n  { top: 0; left: 6px; right: 6px; height: 4px; cursor: n-resize; }
+.resize-edge.s  { bottom: 0; left: 6px; right: 6px; height: 4px; cursor: s-resize; }
+.resize-edge.w  { left: 0; top: 6px; bottom: 6px; width: 4px; cursor: w-resize; }
+.resize-edge.e  { right: 0; top: 6px; bottom: 6px; width: 4px; cursor: e-resize; }
+.resize-corner.nw { top: 0; left: 0; width: 8px; height: 8px; cursor: nw-resize; }
+.resize-corner.ne { top: 0; right: 0; width: 8px; height: 8px; cursor: ne-resize; }
+.resize-corner.sw { bottom: 0; left: 0; width: 8px; height: 8px; cursor: sw-resize; }
+.resize-corner.se { bottom: 0; right: 0; width: 8px; height: 8px; cursor: se-resize; }
 </style>
