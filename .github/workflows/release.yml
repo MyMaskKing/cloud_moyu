@@ -44,14 +44,20 @@ jobs:
         run: |
           INPUT="${{ github.event.inputs.version }}"
           if [ -z "$INPUT" ]; then
+            # 未输入 → 用 tauri.conf.json 的 version 作 base,追加日期 + run_number 保证唯一
             VER=$(node -e "console.log(require('./src-tauri/tauri.conf.json').version)")
-            TAG="v${VER}"
+            DATE=$(date -u +%Y%m%d)
+            TAG="v${VER}-${DATE}.${{ github.run_number }}"
           else
             # 用户输入的版本号,自动补 v 前缀
             case "$INPUT" in
               v*) TAG="$INPUT" ;;
               *)  TAG="v$INPUT" ;;
             esac
+          fi
+          # 若同名 tag 已存在(手动重跑),再追加 run_id 后缀避免冲突
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            TAG="${TAG}-r${{ github.run_id }}"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "使用 tag: $TAG"

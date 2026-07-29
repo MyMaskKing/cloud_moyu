@@ -141,7 +141,7 @@ async function syncCurrentTab() {
 /** 视觉激活:先把位置摆好、再显示、最后 focus——顺序错任何一个都会有 bug */
 async function activateVisual(id: string) {
   const t = tabs.tabs.find((x) => x.id === id);
-  if (!t || t.mode === "pip") return;
+  if (!t || t.mode === "pip" || t.mode === "popout") return;
   // 冷启动兜底:tabs store 是持久化的,但子 webview 每次重启后都要重建
   const exists = await invoke<boolean>("web_tab_exists", { id }).catch(() => true);
   if (!exists && holder.value) {
@@ -158,8 +158,11 @@ async function activateVisual(id: string) {
   }
   // 1) 先把当前 tab 摆到 holder 位置(此时可能还没显示,不影响)
   await syncCurrentTab();
-  // 2) 只显示当前 tab,其余 hide
-  await invoke("set_web_tab_visible_only", { id });
+  // 2) 只对 inline/fullscreen 的 tab 做隐藏切换;popout/pip 是脱离主壳的浮动窗口,不动
+  for (const other of tabs.tabs) {
+    if (other.mode === "pip" || other.mode === "popout") continue;
+    await invoke("set_web_tab_visible", { id: other.id, visible: other.id === id }).catch(() => {});
+  }
   // 3) 再 sync 一次,防止 show 触发的 layout 抖动导致位置飘
   await syncCurrentTab();
   // 4) focus 让子窗口接收键鼠事件(Windows 上 show 不自动 focus)
@@ -455,7 +458,11 @@ async function fullscreenInApp(id?: string) {
   tabs.setMode(t.id, "fullscreen");
   await nextTick();
   await syncFullscreenTab(t.id);
-  await invoke("set_web_tab_visible_only", { id: t.id }).catch(() => {});
+  // 只对 inline/fullscreen tab 做切换,popout/pip 不动
+  for (const other of tabs.tabs) {
+    if (other.mode === "pip" || other.mode === "popout") continue;
+    await invoke("set_web_tab_visible", { id: other.id, visible: other.id === t.id }).catch(() => {});
+  }
   await invoke("focus_web_tab", { id: t.id }).catch(() => {});
   // 保险:fullscreen 前若从 pip/popout 过来,decorations 可能被切过,重新 apply
   await invoke("set_web_tab_opacity", { id: t.id, opacity: opacity.value }).catch(() => {});
@@ -538,17 +545,15 @@ onMounted(async () => {
   unlistenCtx = await win.listen<string>("ctx-menu-pick", (evt) => {
     pickContextMenu(evt.payload);
   });
-  // popout 窗口用户按 ✕:不销毁 tab,切回 inline
+  // pip / popout / fullscreen 按 ✕ = 收回摸鱼窗口;inline ✕(理论不会触发) = 真关
   unlistenCloseReq = await win.listen<{ id: string; label: string }>(
     "web-tab-close-requested",
     (evt) => {
       const t = tabs.tabs.find((x) => x.id === evt.payload.id);
       if (!t) return;
-      // 独立浮窗/画中画/全屏:按 ✕ 都视为"回到摸鱼窗口"
       if (t.mode !== "inline") {
         restoreInline(t.id);
       } else {
-        // inline 状态下用户从任务栏关(理论上不会,skip_taskbar=true)——真关
         tabs.closeTab(t.id);
       }
     },
