@@ -12,11 +12,13 @@ import { useTabsStore } from "../stores/tabs";
  *
  * @param enabled 是否启用
  * @param delayMs 离开多久后触发隐藏
+ * @param bypass  透明度绕过(快捷键切换):true 时永远不做隐藏,并立即恢复
  * @param dim     隐藏时的整体透明度(0-1),默认 0.05
  */
 export function useMouseAutoHide(
   enabled: Ref<boolean>,
   delayMs: Ref<number>,
+  bypass: Ref<boolean>,
   dim = 0.05,
 ) {
   const tabs = useTabsStore();
@@ -72,6 +74,12 @@ export function useMouseAutoHide(
 
   async function tick() {
     if (!enabled.value) return;
+    // 透明度已被快捷键强制关闭:不做任何 dim,顺手把之前的 dim 恢复掉
+    if (bypass.value) {
+      if (hidden) await doShow();
+      outsideSince = null;
+      return;
+    }
     const inside = await cursorInsideApp();
     const now = performance.now();
     if (inside) {
@@ -104,5 +112,10 @@ export function useMouseAutoHide(
       stopPolling();
       doShow();
     }
+  });
+
+  // bypass 打开(用户按快捷键取消透明):立刻恢复 dim,不影响 opacity 值本身
+  watch(bypass, (v) => {
+    if (v && hidden) doShow();
   });
 }

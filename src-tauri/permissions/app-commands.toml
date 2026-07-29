@@ -33,4 +33,5 @@ commands.allow = [
     "is_hidden",
     "trigger_boss_key",
     "update_boss_shortcut",
+    "update_transparency_shortcut",
 ]

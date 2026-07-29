@@ -23,12 +23,14 @@ interface Settings {
   autoHideDelay: number;
   videoAutoLandscape: boolean;
   bossKey: string;
+  transparencyKey: string; // 空字符串 = 未设置
 }
 const defaults: Settings = {
   autoHide: false,
   autoHideDelay: 1500,
   videoAutoLandscape: true,
   bossKey: "Ctrl+Alt+KeyQ",
+  transparencyKey: "",
 };
 const loaded: Settings = (() => {
   try {
@@ -41,6 +43,11 @@ const autoHide = ref(loaded.autoHide);
 const autoHideDelay = ref(loaded.autoHideDelay);
 const videoAutoLandscape = ref(loaded.videoAutoLandscape);
 const bossKey = ref(loaded.bossKey);
+const transparencyKey = ref(loaded.transparencyKey);
+/** 透明度临时绕过:快捷键翻转;true = 强制不透明(方便操作),不改动 opacity 存的值 */
+const bypassOpacity = ref(false);
+/** 实际写到 CSS/子窗口的透明度值:bypass 时永远为 1;否则用 opacity */
+const effectiveOpacity = computed(() => (bypassOpacity.value ? 1 : opacity.value));
 
 /** 把 Tauri Shortcut 内部格式(Ctrl+Alt+KeyQ / Digit1 / F5 / Space)转成显示用 (Ctrl+Alt+Q / 1 / F5 / Space) */
 function humanBossKey(sc: string): string {
@@ -55,7 +62,7 @@ const popoutTitle = (t: { title?: string; url: string }) =>
   `🐟 ${t.title || t.url}   ·   老板键 ${bossKeyLabel.value}`;
 
 watch(
-  [autoHide, autoHideDelay, videoAutoLandscape, bossKey],
+  [autoHide, autoHideDelay, videoAutoLandscape, bossKey, transparencyKey],
   () => {
     localStorage.setItem(
       STORAGE_KEY,
@@ -64,6 +71,7 @@ watch(
         autoHideDelay: autoHideDelay.value,
         videoAutoLandscape: videoAutoLandscape.value,
         bossKey: bossKey.value,
+        transparencyKey: transparencyKey.value,
       }),
     );
   },
@@ -84,7 +92,7 @@ watch(bossKey, () => {
   }
 });
 
-useMouseAutoHide(autoHide, autoHideDelay);
+useMouseAutoHide(autoHide, autoHideDelay, bypassOpacity);
 
 async function minimize() { await win.minimize(); }
 async function toggleMaximize() { await win.toggleMaximize(); }
@@ -101,10 +109,16 @@ async function startResize(dir: ResizeDir, e: MouseEvent) {
 function onOpacityInput(e: Event) {
   const v = Number((e.target as HTMLInputElement).value);
   opacity.value = v;
-  document.body.style.setProperty("--shell-alpha", String(v));
+  // --web-tab-opacity 始终存"用户设定原始值"(useMouseAutoHide 恢复时会读它);
+  // --shell-alpha 和子窗口透明度由下方 watch(effectiveOpacity) 集中 apply,受 bypass 影响
   document.body.style.setProperty("--web-tab-opacity", String(v));
-  invoke("set_all_web_tabs_opacity", { opacity: v }).catch(() => {});
 }
+
+// 集中 apply 实际透明度:bypass 打开时立刻回到 1,不改滑块存的值
+watch(effectiveOpacity, (v) => {
+  document.body.style.setProperty("--shell-alpha", String(v));
+  invoke("set_all_web_tabs_opacity", { opacity: v }).catch(() => {});
+});
 async function triggerBossKey() { await invoke("trigger_boss_key"); }
 
 // 设置打开时全部 tab 隐藏,关闭时按当前活跃恢复
@@ -163,7 +177,7 @@ async function activateVisual(id: string) {
     const x = inner.x / scale + rect.left + chromeOffsetX;
     const y = inner.y / scale + rect.top + chromeOffsetY;
     await invoke("open_web_tab", { id, url: t.url, x, y, width: rect.width, height: rect.height }).catch(() => {});
-    await invoke("set_web_tab_opacity", { id, opacity: opacity.value }).catch(() => {});
+    await invoke("set_web_tab_opacity", { id, opacity: effectiveOpacity.value }).catch(() => {});
   }
   // 1) 先把当前 tab 摆到 holder 位置(此时可能还没显示,不影响)
   await syncCurrentTab();
@@ -197,7 +211,7 @@ async function openSite(url: string, hint?: { name: string; icon: string }) {
   try {
     if (!existed) {
       await invoke("open_web_tab", { id, url, x, y, width: rect.width, height: rect.height });
-      await invoke("set_web_tab_opacity", { id, opacity: opacity.value });
+      await invoke("set_web_tab_opacity", { id, opacity: effectiveOpacity.value });
     }
     await activateVisual(id);
   } catch (e) {
@@ -392,7 +406,7 @@ async function pickContextMenu(key: string) {
         });
         await invoke("set_web_tab_owner", { id: targetId, owner: false }).catch(() => {});
         tabs.setMode(targetId, "pip");
-        await invoke("set_web_tab_opacity", { id: targetId, opacity: opacity.value }).catch(() => {});
+        await invoke("set_web_tab_opacity", { id: targetId, opacity: effectiveOpacity.value }).catch(() => {});
       }
       return;
     case "fullscreen":
@@ -433,7 +447,7 @@ async function togglePip() {
     await invoke("set_web_tab_owner", { id: t.id, owner: false }).catch(() => {});
     tabs.setMode(t.id, "pip");
     // decorations 切换会重设 Windows 的 EX_STYLE,重新 apply 透明度
-    await invoke("set_web_tab_opacity", { id: t.id, opacity: opacity.value }).catch(() => {});
+    await invoke("set_web_tab_opacity", { id: t.id, opacity: effectiveOpacity.value }).catch(() => {});
   }
 }
 
@@ -458,7 +472,7 @@ async function popOut(id?: string) {
   await invoke("set_web_tab_owner", { id: t.id, owner: false }).catch(() => {});
   tabs.setMode(t.id, "popout");
   // decorations 切换后重新 apply 透明度
-  await invoke("set_web_tab_opacity", { id: t.id, opacity: opacity.value }).catch(() => {});
+  await invoke("set_web_tab_opacity", { id: t.id, opacity: effectiveOpacity.value }).catch(() => {});
 }
 
 /** 应用内全屏:webview 占满整个 shell 位置(把地址栏/tabbar 遮住) */
@@ -476,7 +490,7 @@ async function fullscreenInApp(id?: string) {
   }
   await invoke("focus_web_tab", { id: t.id }).catch(() => {});
   // 保险:fullscreen 前若从 pip/popout 过来,decorations 可能被切过,重新 apply
-  await invoke("set_web_tab_opacity", { id: t.id, opacity: opacity.value }).catch(() => {});
+  await invoke("set_web_tab_opacity", { id: t.id, opacity: effectiveOpacity.value }).catch(() => {});
 }
 
 /** fullscreen 时把子窗口拉满整个 shell 内容区(去掉 titlebar) */
@@ -513,7 +527,7 @@ async function restoreInline(id: string) {
   await nextTick();
   await activateVisual(id);
   // decorations 恢复后重新 apply 透明度
-  await invoke("set_web_tab_opacity", { id, opacity: opacity.value }).catch(() => {});
+  await invoke("set_web_tab_opacity", { id, opacity: effectiveOpacity.value }).catch(() => {});
 }
 
 // ────── 生命周期 ──────
@@ -524,6 +538,7 @@ let unlistenCtx: (() => void) | undefined;
 let unlistenCloseReq: (() => void) | undefined;
 let unlistenVideoFs: (() => void) | undefined;
 let unlistenVideoPlay: (() => void) | undefined;
+let unlistenTranspToggle: (() => void) | undefined;
 let ro: ResizeObserver | undefined;
 
 onMounted(async () => {
@@ -548,8 +563,8 @@ onMounted(async () => {
     isHidden.value = evt.payload;
     // 恢复时 Windows ShowWindow 可能重置了 WS_EX_LAYERED,重新 apply 透明度
     if (!evt.payload) {
-      invoke("set_all_web_tabs_opacity", { opacity: opacity.value }).catch(() => {});
-      document.body.style.setProperty("--shell-alpha", "1");
+      invoke("set_all_web_tabs_opacity", { opacity: effectiveOpacity.value }).catch(() => {});
+      document.body.style.setProperty("--shell-alpha", String(effectiveOpacity.value));
       // Rust 恢复时对 WEB_TABS 全部 show(),会露出非活跃的 inline tab;
       // 由前端接管:让当前 active(如果是 inline)显示,其余 inline 再隐藏;popout/pip 保持
       const cur = tabs.active;
@@ -607,6 +622,14 @@ onMounted(async () => {
       await fullscreenInApp(id);
     },
   );
+  // 全局"取消透明"快捷键:翻转 bypassOpacity;为 true 时所有 apply 走 1
+  unlistenTranspToggle = await win.listen("transparency-toggle-requested", () => {
+    bypassOpacity.value = !bypassOpacity.value;
+  });
+  // 冷启动:如已保存"取消透明"快捷键,注册回 Rust
+  if (transparencyKey.value) {
+    invoke("update_transparency_shortcut", { shortcut: transparencyKey.value }).catch(() => {});
+  }
   isHidden.value = await invoke<boolean>("is_hidden");
 
   if (tabs.active) {
@@ -624,6 +647,7 @@ onBeforeUnmount(() => {
   unlistenCloseReq?.();
   unlistenVideoFs?.();
   unlistenVideoPlay?.();
+  unlistenTranspToggle?.();
   ro?.disconnect();
 });
 </script>
@@ -678,10 +702,13 @@ onBeforeUnmount(() => {
       :auto-hide-delay="autoHideDelay"
       :video-auto-landscape="videoAutoLandscape"
       :boss-key="bossKey"
+      :transparency-key="transparencyKey"
+      :bypass-opacity="bypassOpacity"
       @update:auto-hide="autoHide = $event"
       @update:auto-hide-delay="autoHideDelay = $event"
       @update:video-auto-landscape="videoAutoLandscape = $event"
       @update:boss-key="bossKey = $event"
+      @update:transparency-key="transparencyKey = $event"
       @close="showSettings = false"
     />
 

@@ -7,6 +7,8 @@ const props = defineProps<{
   autoHideDelay: number;
   videoAutoLandscape: boolean;
   bossKey: string;
+  transparencyKey: string;
+  bypassOpacity: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -14,11 +16,13 @@ const emit = defineEmits<{
   (e: "update:autoHideDelay", v: number): void;
   (e: "update:videoAutoLandscape", v: boolean): void;
   (e: "update:bossKey", v: string): void;
+  (e: "update:transparencyKey", v: string): void;
   (e: "close"): void;
 }>();
 
-// 快捷键录制
-const recording = ref(false);
+// 快捷键录制:两个快捷键(boss / transparency)复用同一段状态,用 target 标记当前在录哪个
+type RecordTarget = "boss" | "transp";
+const recording = ref<RecordTarget | null>(null);
 const recordedKey = ref("");
 
 /** 把 KeyboardEvent 转成 Tauri 兼容的快捷键字符串
@@ -58,7 +62,7 @@ function onRecordKeydown(e: KeyboardEvent) {
   e.stopPropagation();
 
   if (e.key === "Escape") {
-    recording.value = false;
+    recording.value = null;
     return;
   }
   const s = keyToTauriShortcut(e);
@@ -66,25 +70,41 @@ function onRecordKeydown(e: KeyboardEvent) {
 }
 
 async function applyShortcut() {
-  if (!recordedKey.value) return;
+  if (!recordedKey.value || !recording.value) return;
+  const target = recording.value;
   try {
-    await invoke("update_boss_shortcut", { shortcut: recordedKey.value });
-    emit("update:bossKey", recordedKey.value);
-    recording.value = false;
+    if (target === "boss") {
+      await invoke("update_boss_shortcut", { shortcut: recordedKey.value });
+      emit("update:bossKey", recordedKey.value);
+    } else {
+      await invoke("update_transparency_shortcut", { shortcut: recordedKey.value });
+      emit("update:transparencyKey", recordedKey.value);
+    }
+    recording.value = null;
     recordedKey.value = "";
   } catch (e) {
-    alert("快捷键注册失败：" + e + "\n可能被其它应用占用,请换一个组合");
+    alert("快捷键注册失败:" + e + "\n可能被其它应用或本应用其它快捷键占用,请换一个组合");
   }
 }
 
-function startRecord() {
-  recording.value = true;
+function startRecord(target: RecordTarget) {
+  recording.value = target;
   recordedKey.value = "";
 }
 
 function cancelRecord() {
-  recording.value = false;
+  recording.value = null;
   recordedKey.value = "";
+}
+
+/** 清除"取消透明"快捷键(设置为空) */
+async function clearTransparencyKey() {
+  try {
+    await invoke("update_transparency_shortcut", { shortcut: "" });
+    emit("update:transparencyKey", "");
+  } catch (e) {
+    alert("清除失败:" + e);
+  }
 }
 
 onMounted(() => {
@@ -95,11 +115,15 @@ onBeforeUnmount(() => {
 });
 
 // 显示用：把 Tauri 格式转回好看的展示
-const bossKeyDisplay = computed(() => props.bossKey.split("+").map(p => {
-  if (p.startsWith("Key")) return p.slice(3);
-  if (p.startsWith("Digit")) return p.slice(5);
-  return p;
-}).join(" + "));
+function humanize(sc: string): string {
+  return sc.split("+").map(p => {
+    if (p.startsWith("Key")) return p.slice(3);
+    if (p.startsWith("Digit")) return p.slice(5);
+    return p;
+  }).join(" + ");
+}
+const bossKeyDisplay = computed(() => humanize(props.bossKey));
+const transpKeyDisplay = computed(() => props.transparencyKey ? humanize(props.transparencyKey) : "未设置");
 </script>
 
 <template>
@@ -118,13 +142,47 @@ const bossKeyDisplay = computed(() => props.bossKey.split("+").map(p => {
         <div class="group-content">
           <div class="row">
             <span class="label">当前快捷键</span>
-            <kbd v-if="!recording" class="kbd">{{ bossKeyDisplay }}</kbd>
+            <kbd v-if="recording !== 'boss'" class="kbd">{{ bossKeyDisplay }}</kbd>
             <kbd v-else class="kbd recording">
-              {{ recordedKey ? recordedKey.split('+').map(p => p.startsWith('Key') ? p.slice(3) : p.startsWith('Digit') ? p.slice(5) : p).join(' + ') : '按下组合键…' }}
+              {{ recordedKey ? humanize(recordedKey) : '按下组合键…' }}
             </kbd>
           </div>
           <div class="row actions">
-            <button v-if="!recording" class="btn" @click="startRecord">✎ 修改</button>
+            <button v-if="recording !== 'boss'" class="btn" :disabled="!!recording" @click="startRecord('boss')">✎ 修改</button>
+            <template v-else>
+              <button class="btn primary" :disabled="!recordedKey" @click="applyShortcut">应用</button>
+              <button class="btn" @click="cancelRecord">取消</button>
+              <span class="hint">按 Esc 取消</span>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <!-- 取消透明快捷键 -->
+      <div class="group">
+        <div class="group-title">👁 取消透明快捷键</div>
+        <div class="group-desc">
+          透明状态下按钮不好点?按下这个组合键立即把窗口和网页恢复到不透明,再按一次回到原透明度。
+          期间"鼠标离开自动隐藏"也会临时关闭,方便操作。
+        </div>
+        <div class="group-content">
+          <div class="row">
+            <span class="label">当前快捷键</span>
+            <kbd v-if="recording !== 'transp'" class="kbd" :class="{ 'kbd-empty': !transparencyKey }">{{ transpKeyDisplay }}</kbd>
+            <kbd v-else class="kbd recording">
+              {{ recordedKey ? humanize(recordedKey) : '按下组合键…' }}
+            </kbd>
+            <span v-if="transparencyKey && !recording" class="hint" style="margin-left:8px">
+              {{ bypassOpacity ? '当前:已取消透明' : '当前:按设置的透明度显示' }}
+            </span>
+          </div>
+          <div class="row actions">
+            <template v-if="recording !== 'transp'">
+              <button class="btn" :disabled="!!recording" @click="startRecord('transp')">
+                {{ transparencyKey ? '✎ 修改' : '＋ 设置' }}
+              </button>
+              <button v-if="transparencyKey" class="btn" :disabled="!!recording" @click="clearTransparencyKey">清除</button>
+            </template>
             <template v-else>
               <button class="btn primary" :disabled="!recordedKey" @click="applyShortcut">应用</button>
               <button class="btn" @click="cancelRecord">取消</button>
@@ -299,6 +357,7 @@ const bossKeyDisplay = computed(() => props.bossKey.split("+").map(p => {
   color: #f85149;
   animation: pulse 1.2s infinite;
 }
+.kbd.kbd-empty { color: #6e7681; }
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }

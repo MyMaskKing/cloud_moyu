@@ -15,6 +15,8 @@ const DEFAULT_BOSS_KEY: &str = "Ctrl+Alt+KeyQ";
 static HIDDEN: AtomicBool = AtomicBool::new(false);
 /// 当前已注册的老板键
 static CURRENT_BOSS_KEY: Mutex<Option<Shortcut>> = Mutex::new(None);
+/// 当前已注册的"取消透明"快捷键(可选,用户没设就是 None)
+static CURRENT_TRANSPARENCY_KEY: Mutex<Option<Shortcut>> = Mutex::new(None);
 /// 记录所有已开启的 web tab label,用于老板键批量隐藏/恢复
 static WEB_TABS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
@@ -575,6 +577,46 @@ fn signal_video_fullscreen(app: AppHandle, id: String, entering: bool) -> Result
 
 // ────── M3: 老板键 ──────
 
+/// 让指定 web tab 静音 / 恢复。原理:eval 一段 JS,把页面里所有 <video> <audio> 的 muted 置位。
+/// - 隐藏进入时:记录每个元素原始 muted,置为 true
+/// - 恢复时:如果我们之前记录过它,则回写原始值(用户在 mute 期间自己开静音的场景也保留)
+fn apply_web_tab_mute(app: &AppHandle, label: &str, mute: bool) {
+    let js = if mute {
+        r#"
+        (function(){
+            try {
+                var els = document.querySelectorAll('video, audio');
+                for (var i = 0; i < els.length; i++) {
+                    var el = els[i];
+                    if (el.__moyuOriginalMuted === undefined) {
+                        el.__moyuOriginalMuted = !!el.muted;
+                    }
+                    el.muted = true;
+                }
+            } catch(e) {}
+        })();
+        "#
+    } else {
+        r#"
+        (function(){
+            try {
+                var els = document.querySelectorAll('video, audio');
+                for (var i = 0; i < els.length; i++) {
+                    var el = els[i];
+                    if (el.__moyuOriginalMuted !== undefined) {
+                        el.muted = !!el.__moyuOriginalMuted;
+                        delete el.__moyuOriginalMuted;
+                    }
+                }
+            } catch(e) {}
+        })();
+        "#
+    };
+    if let Some(win) = app.get_webview_window(label) {
+        let _ = win.eval(js);
+    }
+}
+
 fn toggle_hide(app: &AppHandle) -> bool {
     let now_hidden = !HIDDEN.load(Ordering::Relaxed);
     HIDDEN.store(now_hidden, Ordering::Relaxed);
@@ -583,9 +625,11 @@ fn toggle_hide(app: &AppHandle) -> bool {
         if now_hidden { let _ = main.hide(); }
         else { let _ = main.show(); let _ = main.set_focus(); }
     }
-    // 遍历所有 web tab
+    // 遍历所有 web tab:静音同步 + 显示切换
     let labels = WEB_TABS.lock().map(|g| g.clone()).unwrap_or_default();
     for l in labels {
+        // 静音必须先 eval,再 hide;否则 hide 后 webview 可能不响应 eval(某些平台)
+        apply_web_tab_mute(app, &l, now_hidden);
         if let Some(win) = app.get_webview_window(&l) {
             if now_hidden { let _ = win.hide(); }
             else { let _ = win.show(); }
@@ -621,6 +665,25 @@ fn update_boss_shortcut(app: AppHandle, shortcut: String) -> Result<(), String> 
     Ok(())
 }
 
+/// 设置或清除"取消透明"快捷键。shortcut 为空字符串 = 清除。
+#[tauri::command]
+fn update_transparency_shortcut(app: AppHandle, shortcut: String) -> Result<(), String> {
+    let gs = app.global_shortcut();
+    // 先卸载旧的
+    if let Ok(mut guard) = CURRENT_TRANSPARENCY_KEY.lock() {
+        if let Some(old) = guard.take() {
+            let _ = gs.unregister(old);
+        }
+        if shortcut.trim().is_empty() {
+            return Ok(());
+        }
+        let new_sc: Shortcut = shortcut.parse().map_err(|e| format!("invalid shortcut: {e}"))?;
+        gs.register(new_sc.clone()).map_err(|e| e.to_string())?;
+        *guard = Some(new_sc);
+    }
+    Ok(())
+}
+
 // ────── 入口 ──────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -642,6 +705,16 @@ pub fn run() {
                             .unwrap_or_else(|| shortcut == &default_boss_for_handler);
                         if is_boss {
                             toggle_hide(app);
+                            return;
+                        }
+                        let is_transp = CURRENT_TRANSPARENCY_KEY
+                            .lock()
+                            .ok()
+                            .and_then(|g| g.clone())
+                            .map(|s| &s == shortcut)
+                            .unwrap_or(false);
+                        if is_transp {
+                            let _ = app.emit("transparency-toggle-requested", ());
                         }
                     }
                 })
@@ -675,6 +748,7 @@ pub fn run() {
             is_hidden,
             trigger_boss_key,
             update_boss_shortcut,
+            update_transparency_shortcut,
         ])
         .setup(move |app| {
             if let Some(win) = app.get_webview_window("main") {
