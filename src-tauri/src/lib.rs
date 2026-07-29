@@ -154,7 +154,6 @@ async fn open_web_tab(
     let win = WebviewWindowBuilder::new(&app, &label, parsed)
         .parent(&main).map_err(|e| e.to_string())?
         .decorations(false)
-        .transparent(false)
         .resizable(false)
         .skip_taskbar(true)
         .inner_size(width, height)
