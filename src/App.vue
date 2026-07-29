@@ -505,6 +505,11 @@ onMounted(async () => {
   }
   unlistenBoss = await win.listen<boolean>("boss-key-toggled", (evt) => {
     isHidden.value = evt.payload;
+    // 恢复时 Windows ShowWindow 可能重置了 WS_EX_LAYERED,重新 apply 透明度
+    if (!evt.payload) {
+      invoke("set_all_web_tabs_opacity", { opacity: opacity.value }).catch(() => {});
+      document.body.style.setProperty("--shell-alpha", "1");
+    }
   });
   // 独立菜单窗口选中项后广播
   unlistenCtx = await win.listen<string>("ctx-menu-pick", (evt) => {
