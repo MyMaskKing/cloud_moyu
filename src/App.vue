@@ -112,6 +112,8 @@ function onOpacityInput(e: Event) {
   // --web-tab-opacity 始终存"用户设定原始值"(useMouseAutoHide 恢复时会读它);
   // --shell-alpha 和子窗口透明度由下方 watch(effectiveOpacity) 集中 apply,受 bypass 影响
   document.body.style.setProperty("--web-tab-opacity", String(v));
+  // 用户主动拖滑块视为"我要调透明度",退出快捷键的 bypass 临时态,让滑块立即生效
+  if (bypassOpacity.value) bypassOpacity.value = false;
 }
 
 // 集中 apply 实际透明度:bypass 打开时立刻回到 1,不改滑块存的值
