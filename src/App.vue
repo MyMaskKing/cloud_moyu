@@ -42,6 +42,18 @@ const autoHideDelay = ref(loaded.autoHideDelay);
 const videoAutoLandscape = ref(loaded.videoAutoLandscape);
 const bossKey = ref(loaded.bossKey);
 
+/** 把 Tauri Shortcut 内部格式(Ctrl+Alt+KeyQ / Digit1 / F5 / Space)转成显示用 (Ctrl+Alt+Q / 1 / F5 / Space) */
+function humanBossKey(sc: string): string {
+  return sc.split("+").map((part) => {
+    if (part.startsWith("Key") && part.length === 4) return part.slice(3);
+    if (part.startsWith("Digit") && part.length === 6) return part.slice(5);
+    return part;
+  }).join("+");
+}
+const bossKeyLabel = computed(() => humanBossKey(bossKey.value));
+const popoutTitle = (t: { title?: string; url: string }) =>
+  `🐟 ${t.title || t.url}   ·   老板键 ${bossKeyLabel.value}`;
+
 watch(
   [autoHide, autoHideDelay, videoAutoLandscape, bossKey],
   () => {
@@ -56,6 +68,21 @@ watch(
     );
   },
 );
+
+// bossKey 改动 → 刷新所有 pip/popout 的窗口标题(标题里显示当前老板键)
+watch(bossKey, () => {
+  for (const t of tabs.tabs) {
+    if (t.mode === "pip" || t.mode === "popout") {
+      invoke("set_web_tab_chrome", {
+        id: t.id,
+        decorations: true,
+        skipTaskbar: false,
+        alwaysOnTop: t.mode === "pip",
+        title: popoutTitle(t),
+      }).catch(() => {});
+    }
+  }
+});
 
 useMouseAutoHide(autoHide, autoHideDelay);
 
@@ -324,8 +351,9 @@ async function pickContextMenu(key: string) {
           decorations: true,
           skipTaskbar: false,
           alwaysOnTop: true,
-          title: `🐟 ${t.title || t.url}`,
+          title: popoutTitle(t),
         });
+        await invoke("set_web_tab_owner", { id: targetId, owner: false }).catch(() => {});
         tabs.setMode(targetId, "pip");
         await invoke("set_web_tab_opacity", { id: targetId, opacity: opacity.value }).catch(() => {});
       }
@@ -362,8 +390,10 @@ async function togglePip() {
       decorations: true,
       skipTaskbar: false,
       alwaysOnTop: true,
-      title: `🐟 ${t.title || t.url}`,
+      title: popoutTitle(t),
     });
+    // 断开 owner,主窗最小化时它保持浮着
+    await invoke("set_web_tab_owner", { id: t.id, owner: false }).catch(() => {});
     tabs.setMode(t.id, "pip");
     // decorations 切换会重设 Windows 的 EX_STYLE,重新 apply 透明度
     await invoke("set_web_tab_opacity", { id: t.id, opacity: opacity.value }).catch(() => {});
@@ -385,8 +415,10 @@ async function popOut(id?: string) {
     decorations: true,
     skipTaskbar: false,
     alwaysOnTop: false,
-    title: `🐟 ${t.title || t.url}`,
+    title: popoutTitle(t),
   });
+  // 断开与主窗的 owner 关系,主窗最小化时它不再被拖走
+  await invoke("set_web_tab_owner", { id: t.id, owner: false }).catch(() => {});
   tabs.setMode(t.id, "popout");
   // decorations 切换后重新 apply 透明度
   await invoke("set_web_tab_opacity", { id: t.id, opacity: opacity.value }).catch(() => {});
@@ -434,6 +466,8 @@ async function restoreInline(id: string) {
     alwaysOnTop: false,
     title: null,
   }).catch(() => {});
+  // 恢复 owner 关系,让主窗能控制它
+  await invoke("set_web_tab_owner", { id, owner: true }).catch(() => {});
   tabs.setMode(id, "inline");
   await nextTick();
   await activateVisual(id);

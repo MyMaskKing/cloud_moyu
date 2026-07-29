@@ -226,6 +226,22 @@ fn web_tab_exists(app: AppHandle, id: String) -> bool {
     app.get_webview_window(&tab_label(&id)).is_some()
 }
 
+/// 获取 web-tab 子窗口在屏幕上的物理坐标矩形,用于"鼠标是否在窗口上"判断
+#[tauri::command]
+fn web_tab_bounds(app: AppHandle, id: String) -> Option<(i32, i32, u32, u32)> {
+    let win = app.get_webview_window(&tab_label(&id))?;
+    let pos = win.outer_position().ok()?;
+    let size = win.outer_size().ok()?;
+    Some((pos.x, pos.y, size.width, size.height))
+}
+
+/// 全局光标屏幕坐标(物理像素)
+#[tauri::command]
+fn get_cursor_position(app: AppHandle) -> Result<(f64, f64), String> {
+    let p = app.cursor_position().map_err(|e| e.to_string())?;
+    Ok((p.x, p.y))
+}
+
 // ────── 导航:后退 / 前进 / 刷新 ──────
 
 #[tauri::command]
@@ -280,6 +296,45 @@ async fn set_web_tab_chrome(
         if let Some(t) = title {
             win.set_title(&t).map_err(|e| e.to_string())?;
         }
+    }
+    Ok(())
+}
+
+/// popout / inline 切换时用:owner=false 断开与主窗的 owner 关系(主窗最小化不再拖走它);
+/// owner=true 重新挂回主窗(inline 状态需要一起隐藏跟随主窗)
+#[tauri::command]
+fn set_web_tab_owner(app: AppHandle, id: String, owner: bool) -> Result<(), String> {
+    let win = match app.get_webview_window(&tab_label(&id)) {
+        Some(w) => w,
+        None => return Ok(()),
+    };
+
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowLongPtrW, GWLP_HWNDPARENT,
+        };
+
+        let raw = win.hwnd().map_err(|e| e.to_string())?;
+        let child_hwnd = HWND(raw.0 as *mut _);
+
+        let new_owner: isize = if owner {
+            let main = app.get_webview_window("main").ok_or("main window missing")?;
+            let mh = main.hwnd().map_err(|e| e.to_string())?;
+            mh.0 as isize
+        } else {
+            0
+        };
+
+        unsafe {
+            SetWindowLongPtrW(child_hwnd, GWLP_HWNDPARENT, new_owner);
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (win, owner);
     }
     Ok(())
 }
@@ -545,12 +600,15 @@ pub fn run() {
             close_web_tab,
             set_web_tab_visible,
             web_tab_exists,
+            web_tab_bounds,
+            get_cursor_position,
             set_web_tab_visible_only,
             focus_web_tab,
             set_web_tab_opacity,
             set_all_web_tabs_opacity,
             set_web_tab_resizable,
             set_web_tab_chrome,
+            set_web_tab_owner,
             web_tab_go_back,
             web_tab_go_forward,
             web_tab_reload,
