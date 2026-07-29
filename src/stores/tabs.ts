@@ -15,7 +15,7 @@ export interface Tab {
   pipRatio: PipRatio;
 }
 
-const STORAGE_KEY = "muoyu-tabs-v1";
+const STORAGE_KEY = "moyu-tabs-v1";
 
 // 视频站点关键字 → PiP 时默认走 16:9 大屏
 const VIDEO_HOSTS = /bilibili\.com|youtube\.com|douyin\.com|iqiyi\.com|qq\.com\/tv|v\.qq\.com|youku\.com/i;

@@ -17,7 +17,7 @@ const isHidden = ref(false);
 const tabs = useTabsStore();
 const sitesStore = useSitesStore();
 
-const STORAGE_KEY = "muoyu-settings-v1";
+const STORAGE_KEY = "moyu-settings-v1";
 interface Settings {
   autoHide: boolean;
   autoHideDelay: number;

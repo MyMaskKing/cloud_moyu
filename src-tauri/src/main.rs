@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    cloud_muoyu_lib::run()
+    cloud_moyu_lib::run()
 }

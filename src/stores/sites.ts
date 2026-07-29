@@ -9,7 +9,7 @@ export interface Site {
   builtin?: boolean; // 默认站,可删除;删除后重装可回来
 }
 
-const STORAGE_KEY = "muoyu-sites-v1";
+const STORAGE_KEY = "moyu-sites-v1";
 
 const DEFAULT_SITES: Site[] = [
   { name: "微信读书", icon: "📖", url: "https://weread.qq.com", builtin: true },
