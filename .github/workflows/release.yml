@@ -1,0 +1,147 @@
+name: Build & Release
+
+# 手动触发:在 GitHub 仓库 → Actions → Build & Release → Run workflow 里执行
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release 版本号 (例:v0.1.0),留空则用 tauri.conf.json 的 version 加 v 前缀'
+        required: false
+        default: ''
+      prerelease:
+        description: '是否标记为 pre-release'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      draft:
+        description: '是否创建为 draft (草稿,不公开)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: write  # 创建 release / 上传产物需要
+
+jobs:
+  # ─────────── 1. 生成本次发布用的 tag & release 上下文 ───────────
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      release_id: ${{ steps.create.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 解析版本号
+        id: resolve
+        shell: bash
+        run: |
+          INPUT="${{ github.event.inputs.version }}"
+          if [ -z "$INPUT" ]; then
+            VER=$(node -e "console.log(require('./src-tauri/tauri.conf.json').version)")
+            TAG="v${VER}"
+          else
+            # 用户输入的版本号,自动补 v 前缀
+            case "$INPUT" in
+              v*) TAG="$INPUT" ;;
+              *)  TAG="v$INPUT" ;;
+            esac
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "使用 tag: $TAG"
+
+      - name: 创建 draft Release
+        id: create
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = '${{ steps.resolve.outputs.tag }}';
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              tag_name: tag,
+              name: `🐟 云摸鱼 ${tag}`,
+              body: `## 云摸鱼 ${tag}\n\n更轻量的桌面摸鱼客户端 (Tauri + Vue3)。\n\n### 下载\n- **Windows**: \`.msi\` / \`.exe\` (NSIS)\n- **macOS Apple Silicon (M1/M2/M3)**: \`_aarch64.dmg\`\n- **macOS Intel**: \`_x64.dmg\`\n\n> 首次运行 macOS 版可能提示"无法验证开发者",在系统设置 → 隐私与安全性里放行即可。`,
+              draft: ${{ github.event.inputs.draft }},
+              prerelease: ${{ github.event.inputs.prerelease }},
+            });
+            return data.id;
+
+  # ─────────── 2. 三平台并行构建 & 上传产物 ───────────
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: macos-arm64
+            os: macos-14         # Apple Silicon runner
+            target: aarch64-apple-darwin
+          - name: macos-x64
+            os: macos-13         # Intel runner
+            target: x86_64-apple-darwin
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 缓存 Cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+          key: ${{ matrix.target }}
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: Tauri 构建 & 上传到 Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          args: --target ${{ matrix.target }}
+
+  # ─────────── 3. 全部平台完成后发布 Release ───────────
+  publish:
+    needs: [prepare, build]
+    if: ${{ github.event.inputs.draft == 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 把 draft 翻成正式发布
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              release_id: ${{ needs.prepare.outputs.release_id }},
+              draft: false,
+              prerelease: ${{ github.event.inputs.prerelease }},
+            });
