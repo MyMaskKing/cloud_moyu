@@ -61,10 +61,19 @@ async fn open_web_tab(
     let main = app.get_webview_window("main").ok_or("main window missing")?;
     let parsed = WebviewUrl::External(url.parse().map_err(|e: url::ParseError| e.to_string())?);
 
-    // 关键:重写 window.open,让点击"新标签"跳转在当前 tab 内进行
-    // 视频检测/自动横屏在下一轮通过 title 信号通道单独接入
-    let init_script = r#"
+    // 注入脚本:
+    //   1. 重写 window.open / _blank → 在当前 tab 内跳转
+    //   2. 拦截 HTML5 fullscreen → 转为主窗口的"应用内全屏"(不让子窗占满 OS)
+    //   3. 首个 <video> play → 触发"自动横屏"信号(设置开启才响应)
+    let init_script_tpl = r#"
         (function() {
+          const TAB_ID = "__MUOYU_TAB_ID__";
+          const bridge = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
+          const invoke = function(cmd, args) {
+            try { if (bridge) bridge(cmd, args || {}); } catch (e) {}
+          };
+
+          // ── window.open / _blank 拦截 ──
           const nativeOpen = window.open;
           window.open = function(url, target, features) {
             if (url) {
@@ -77,7 +86,6 @@ async fn open_web_tab(
             }
             return nativeOpen.call(window, url, target, features);
           };
-
           document.addEventListener('click', function(e) {
             const a = e.target && e.target.closest && e.target.closest('a[href]');
             if (a && a.target === '_blank' && a.href) {
@@ -86,8 +94,62 @@ async fn open_web_tab(
               window.location.href = a.href;
             }
           }, true);
+
+          // ── HTML5 fullscreen 拦截:改由主窗口做"应用内全屏" ──
+          let fakeFsEl = null;
+          function enterFake(el) {
+            fakeFsEl = el;
+            try {
+              Object.defineProperty(document, 'fullscreenElement', {
+                configurable: true, get: function() { return fakeFsEl; }
+              });
+              Object.defineProperty(document, 'webkitFullscreenElement', {
+                configurable: true, get: function() { return fakeFsEl; }
+              });
+            } catch (e) {}
+            try { document.dispatchEvent(new Event('fullscreenchange')); } catch (e) {}
+            try { document.dispatchEvent(new Event('webkitfullscreenchange')); } catch (e) {}
+            invoke('signal_video_fullscreen', { id: TAB_ID, entering: true });
+          }
+          function exitFake() {
+            fakeFsEl = null;
+            try {
+              Object.defineProperty(document, 'fullscreenElement', {
+                configurable: true, get: function() { return null; }
+              });
+              Object.defineProperty(document, 'webkitFullscreenElement', {
+                configurable: true, get: function() { return null; }
+              });
+            } catch (e) {}
+            try { document.dispatchEvent(new Event('fullscreenchange')); } catch (e) {}
+            try { document.dispatchEvent(new Event('webkitfullscreenchange')); } catch (e) {}
+            invoke('signal_video_fullscreen', { id: TAB_ID, entering: false });
+          }
+          const proto = Element.prototype;
+          proto.requestFullscreen = function() { enterFake(this); return Promise.resolve(); };
+          if (proto.webkitRequestFullscreen)     proto.webkitRequestFullscreen     = function() { enterFake(this); };
+          if (proto.webkitRequestFullScreen)     proto.webkitRequestFullScreen     = function() { enterFake(this); };
+          if (proto.msRequestFullscreen)         proto.msRequestFullscreen         = function() { enterFake(this); };
+          document.exitFullscreen        = function() { exitFake(); return Promise.resolve(); };
+          document.webkitExitFullscreen  = function() { exitFake(); };
+          document.msExitFullscreen      = function() { exitFake(); };
+          // 键盘 ESC / F 退出:hook keydown
+          document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && fakeFsEl) { e.stopPropagation(); exitFake(); }
+          }, true);
+
+          // ── 视频首次 play → 自动横屏信号 ──
+          let videoSignaled = false;
+          document.addEventListener('play', function(e) {
+            if (videoSignaled) return;
+            if (e.target && e.target.tagName === 'VIDEO') {
+              videoSignaled = true;
+              invoke('signal_video_play', { id: TAB_ID });
+            }
+          }, true);
         })();
     "#;
+    let init_script = init_script_tpl.replace("__MUOYU_TAB_ID__", &id);
 
     let win = WebviewWindowBuilder::new(&app, &label, parsed)
         .parent(&main).map_err(|e| e.to_string())?
@@ -156,6 +218,12 @@ async fn set_web_tab_visible(app: AppHandle, id: String, visible: bool) -> Resul
         else { win.hide().map_err(|e| e.to_string())?; }
     }
     Ok(())
+}
+
+/// 前端查:某 tab 的子窗口当前是否存在(冷启动后 tabs store 已恢复但 webview 还没建时会返回 false)
+#[tauri::command]
+fn web_tab_exists(app: AppHandle, id: String) -> bool {
+    app.get_webview_window(&tab_label(&id)).is_some()
 }
 
 // ────── 导航:后退 / 前进 / 刷新 ──────
@@ -381,6 +449,22 @@ async fn exit_pip(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
+// ────── 视频信号:play(自动横屏) / requestFullscreen(应用内全屏) ──────
+
+/// 子 webview 的注入脚本调用:视频首次 play
+#[tauri::command]
+fn signal_video_play(app: AppHandle, id: String) -> Result<(), String> {
+    let _ = app.emit("web-tab-video-play", id);
+    Ok(())
+}
+
+/// 子 webview 的注入脚本调用:HTML5 fullscreen 进入/退出
+#[tauri::command]
+fn signal_video_fullscreen(app: AppHandle, id: String, entering: bool) -> Result<(), String> {
+    let _ = app.emit("web-tab-video-fullscreen", serde_json::json!({ "id": id, "entering": entering }));
+    Ok(())
+}
+
 // ────── M3: 老板键 ──────
 
 fn toggle_hide(app: &AppHandle) -> bool {
@@ -460,6 +544,7 @@ pub fn run() {
             resize_web_tab,
             close_web_tab,
             set_web_tab_visible,
+            web_tab_exists,
             set_web_tab_visible_only,
             focus_web_tab,
             set_web_tab_opacity,
@@ -471,6 +556,8 @@ pub fn run() {
             web_tab_reload,
             enter_pip,
             exit_pip,
+            signal_video_play,
+            signal_video_fullscreen,
             show_context_menu,
             hide_context_menu,
             is_hidden,

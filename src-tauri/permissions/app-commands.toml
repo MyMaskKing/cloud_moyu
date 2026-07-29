@@ -1,0 +1,32 @@
+# 主窗口用:允许调用 app 自身的所有自定义命令
+# Tauri v2 一旦项目里存在任何 permissions/*.toml,ACL manifest 就会生效,
+# 此后连 local origin 的自定义命令也要显式允许(参见 on_message 源码 has_app_acl_manifest 分支)
+
+[[permission]]
+identifier = "allow-app-commands"
+description = "允许主窗口/子窗口调用摸鱼应用自身的所有自定义命令"
+commands.allow = [
+    "open_web_tab",
+    "resize_web_tab",
+    "close_web_tab",
+    "set_web_tab_visible",
+    "set_web_tab_visible_only",
+    "web_tab_exists",
+    "focus_web_tab",
+    "set_web_tab_opacity",
+    "set_all_web_tabs_opacity",
+    "set_web_tab_resizable",
+    "set_web_tab_chrome",
+    "web_tab_go_back",
+    "web_tab_go_forward",
+    "web_tab_reload",
+    "enter_pip",
+    "exit_pip",
+    "signal_video_play",
+    "signal_video_fullscreen",
+    "show_context_menu",
+    "hide_context_menu",
+    "is_hidden",
+    "trigger_boss_key",
+    "update_boss_shortcut",
+]

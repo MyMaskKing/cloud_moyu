@@ -1,9 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "web-tabs",
-  "description": "网页承载子窗口:允许 opener 打开任意外链;实际站内点击靠 init_script 改写为当前页跳转",
+  "description": "网页承载子窗口:允许 opener 打开任意外链;实际站内点击靠 init_script 改写为当前页跳转;放开视频信号自定义命令给 remote 网页调用",
   "windows": ["web-tab-*", "web-tab"],
   "webviews": ["web-tab-*", "web-tab"],
+  "remote": {
+    "urls": ["http://*", "https://*"]
+  },
   "permissions": [
     {
       "identifier": "opener:allow-open-url",
@@ -11,6 +14,8 @@
         { "url": "https://**" },
         { "url": "http://**" }
       ]
-    }
+    },
+    "allow-signal-video-play",
+    "allow-signal-video-fullscreen"
   ]
 }

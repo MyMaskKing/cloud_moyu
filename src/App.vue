@@ -66,6 +66,7 @@ function onOpacityInput(e: Event) {
   const v = Number((e.target as HTMLInputElement).value);
   opacity.value = v;
   document.body.style.setProperty("--shell-alpha", String(v));
+  document.body.style.setProperty("--web-tab-opacity", String(v));
   invoke("set_all_web_tabs_opacity", { opacity: v }).catch(() => {});
 }
 async function triggerBossKey() { await invoke("trigger_boss_key"); }
@@ -114,6 +115,20 @@ async function syncCurrentTab() {
 async function activateVisual(id: string) {
   const t = tabs.tabs.find((x) => x.id === id);
   if (!t || t.mode === "pip") return;
+  // 冷启动兜底:tabs store 是持久化的,但子 webview 每次重启后都要重建
+  const exists = await invoke<boolean>("web_tab_exists", { id }).catch(() => true);
+  if (!exists && holder.value) {
+    const rect = holder.value.getBoundingClientRect();
+    const scale = window.devicePixelRatio || 1;
+    const outer = await win.outerPosition();
+    const inner = await win.innerPosition();
+    const chromeOffsetX = (outer.x - inner.x) / scale;
+    const chromeOffsetY = (outer.y - inner.y) / scale;
+    const x = inner.x / scale + rect.left + chromeOffsetX;
+    const y = inner.y / scale + rect.top + chromeOffsetY;
+    await invoke("open_web_tab", { id, url: t.url, x, y, width: rect.width, height: rect.height }).catch(() => {});
+    await invoke("set_web_tab_opacity", { id, opacity: opacity.value }).catch(() => {});
+  }
   // 1) 先把当前 tab 摆到 holder 位置(此时可能还没显示,不影响)
   await syncCurrentTab();
   // 2) 只显示当前 tab,其余 hide
@@ -303,8 +318,16 @@ async function pickContextMenu(key: string) {
         const x = window.screen.availWidth - size.w - 24;
         const y = window.screen.availHeight - size.h - 24;
         await invoke("enter_pip", { id: targetId, x, y, width: size.w, height: size.h });
-        await invoke("set_web_tab_resizable", { id: targetId, resizable: false });
+        await invoke("set_web_tab_resizable", { id: targetId, resizable: true });
+        await invoke("set_web_tab_chrome", {
+          id: targetId,
+          decorations: true,
+          skipTaskbar: false,
+          alwaysOnTop: true,
+          title: `🐟 ${t.title || t.url}`,
+        });
         tabs.setMode(targetId, "pip");
+        await invoke("set_web_tab_opacity", { id: targetId, opacity: opacity.value }).catch(() => {});
       }
       return;
     case "fullscreen":
@@ -332,8 +355,18 @@ async function togglePip() {
     const x = window.screen.availWidth - size.w - 24;
     const y = window.screen.availHeight - size.h - 24;
     await invoke("enter_pip", { id: t.id, x, y, width: size.w, height: size.h });
-    await invoke("set_web_tab_resizable", { id: t.id, resizable: false });
+    await invoke("set_web_tab_resizable", { id: t.id, resizable: true });
+    // pip 也要有系统标题栏,否则无法拖动/关闭
+    await invoke("set_web_tab_chrome", {
+      id: t.id,
+      decorations: true,
+      skipTaskbar: false,
+      alwaysOnTop: true,
+      title: `🐟 ${t.title || t.url}`,
+    });
     tabs.setMode(t.id, "pip");
+    // decorations 切换会重设 Windows 的 EX_STYLE,重新 apply 透明度
+    await invoke("set_web_tab_opacity", { id: t.id, opacity: opacity.value }).catch(() => {});
   }
 }
 
@@ -355,6 +388,8 @@ async function popOut(id?: string) {
     title: `🐟 ${t.title || t.url}`,
   });
   tabs.setMode(t.id, "popout");
+  // decorations 切换后重新 apply 透明度
+  await invoke("set_web_tab_opacity", { id: t.id, opacity: opacity.value }).catch(() => {});
 }
 
 /** 应用内全屏:webview 占满整个 shell 位置(把地址栏/tabbar 遮住) */
@@ -367,6 +402,8 @@ async function fullscreenInApp(id?: string) {
   await syncFullscreenTab(t.id);
   await invoke("set_web_tab_visible_only", { id: t.id }).catch(() => {});
   await invoke("focus_web_tab", { id: t.id }).catch(() => {});
+  // 保险:fullscreen 前若从 pip/popout 过来,decorations 可能被切过,重新 apply
+  await invoke("set_web_tab_opacity", { id: t.id, opacity: opacity.value }).catch(() => {});
 }
 
 /** fullscreen 时把子窗口拉满整个 shell 内容区(去掉 titlebar) */
@@ -400,6 +437,8 @@ async function restoreInline(id: string) {
   tabs.setMode(id, "inline");
   await nextTick();
   await activateVisual(id);
+  // decorations 恢复后重新 apply 透明度
+  await invoke("set_web_tab_opacity", { id, opacity: opacity.value }).catch(() => {});
 }
 
 // ────── 生命周期 ──────
@@ -408,6 +447,8 @@ let unlistenResize: (() => void) | undefined;
 let unlistenBoss: (() => void) | undefined;
 let unlistenCtx: (() => void) | undefined;
 let unlistenCloseReq: (() => void) | undefined;
+let unlistenVideoFs: (() => void) | undefined;
+let unlistenVideoPlay: (() => void) | undefined;
 let ro: ResizeObserver | undefined;
 
 onMounted(async () => {
@@ -450,9 +491,40 @@ onMounted(async () => {
       }
     },
   );
+  // 子 webview 的视频 requestFullscreen → 走"应用内全屏"(浏览器原生全屏被 init 脚本拦掉了)
+  unlistenVideoFs = await win.listen<{ id: string; entering: boolean }>(
+    "web-tab-video-fullscreen",
+    async (evt) => {
+      const { id, entering } = evt.payload;
+      const t = tabs.tabs.find((x) => x.id === id);
+      if (!t) return;
+      if (entering) {
+        if (t.mode !== "fullscreen") await fullscreenInApp(id);
+      } else {
+        if (t.mode === "fullscreen") await restoreInline(id);
+      }
+    },
+  );
+  // 视频站首次 play → 若开启"自动横屏",自动进应用内全屏(横屏)
+  unlistenVideoPlay = await win.listen<string>(
+    "web-tab-video-play",
+    async (evt) => {
+      if (!videoAutoLandscape.value) return;
+      const id = evt.payload;
+      const t = tabs.tabs.find((x) => x.id === id);
+      if (!t || t.mode === "fullscreen" || t.mode === "pip" || t.mode === "popout") return;
+      // 仅视频站(pipRatio=16:9 表示 tabs.ts 已识别为视频站)
+      if (t.pipRatio !== "16:9") return;
+      await fullscreenInApp(id);
+    },
+  );
   isHidden.value = await invoke<boolean>("is_hidden");
 
-  if (tabs.active) address.value = tabs.active.url;
+  if (tabs.active) {
+    address.value = tabs.active.url;
+    // 冷启动:tabs 已从 localStorage 恢复,但子 webview 未建 → 主动激活当前 tab 触发懒建
+    if (tabs.active.mode === "inline") await activateVisual(tabs.active.id);
+  }
 });
 
 onBeforeUnmount(() => {
@@ -461,6 +533,8 @@ onBeforeUnmount(() => {
   unlistenBoss?.();
   unlistenCtx?.();
   unlistenCloseReq?.();
+  unlistenVideoFs?.();
+  unlistenVideoPlay?.();
   ro?.disconnect();
 });
 </script>
@@ -589,6 +663,7 @@ onBeforeUnmount(() => {
 <style>
 :root {
   --shell-alpha: 1;
+  --web-tab-opacity: 1;
   color-scheme: dark;
 }
 

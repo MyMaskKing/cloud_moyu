@@ -1,0 +1,12 @@
+# 自定义命令 ACL:允许 remote(https)webview 调用 app 自身的信号命令
+# 这两个命令只做 emit 事件到主窗口,没有任何危险副作用,可以放开给 http/https
+
+[[permission]]
+identifier = "allow-signal-video-play"
+description = "允许 remote webview 上报视频首次 play(用于自动横屏)"
+commands.allow = ["signal_video_play"]
+
+[[permission]]
+identifier = "allow-signal-video-fullscreen"
+description = "允许 remote webview 上报 HTML5 fullscreen 进入/退出"
+commands.allow = ["signal_video_fullscreen"]

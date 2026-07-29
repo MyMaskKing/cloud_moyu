@@ -27,6 +27,7 @@
     "core:event:allow-emit",
     "global-shortcut:default",
     "global-shortcut:allow-register",
-    "global-shortcut:allow-unregister"
+    "global-shortcut:allow-unregister",
+    "allow-app-commands"
   ]
 }
