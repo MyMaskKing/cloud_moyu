@@ -863,9 +863,18 @@ html, body, #app {
 .address input:focus { border-color: #58a6ff; }
 
 .sites {
-  display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none;
+  display: flex; gap: 6px; overflow-x: auto; overflow-y: hidden;
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
 }
-.sites::-webkit-scrollbar { display: none; }
+.sites::-webkit-scrollbar { height: 6px; }
+.sites::-webkit-scrollbar-track { background: transparent; }
+.sites::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 3px;
+}
+.sites::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.28); }
 .site {
   position: relative;
   display: flex; align-items: center; gap: 5px;

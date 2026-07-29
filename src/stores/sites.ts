@@ -9,7 +9,8 @@ export interface Site {
   builtin?: boolean; // 默认站,可删除;删除后重装可回来
 }
 
-const STORAGE_KEY = "moyu-sites-v1";
+const STORAGE_KEY = "moyu-sites-v2";
+const LEGACY_KEY = "moyu-sites-v1";
 
 const DEFAULT_SITES: Site[] = [
   { name: "微信读书", icon: "📖", url: "https://weread.qq.com", builtin: true },
@@ -27,11 +28,24 @@ const DEFAULT_SITES: Site[] = [
 
 function loadPersisted(): Site[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [...DEFAULT_SITES];
-    const parsed = JSON.parse(raw) as Site[];
-    if (!Array.isArray(parsed)) return [...DEFAULT_SITES];
-    return parsed;
+    // v2:如果 v2 已存在,直接用;否则从 v1 迁移(保留用户自建、补上新增默认站),再落 v2
+    const rawV2 = localStorage.getItem(STORAGE_KEY);
+    if (rawV2) {
+      const parsed = JSON.parse(rawV2) as Site[];
+      if (Array.isArray(parsed)) return parsed;
+    }
+    const rawV1 = localStorage.getItem(LEGACY_KEY);
+    if (rawV1) {
+      const old = JSON.parse(rawV1) as Site[];
+      if (Array.isArray(old)) {
+        const oldUrls = new Set(old.map((s) => s.url));
+        const merged = [...old, ...DEFAULT_SITES.filter((d) => !oldUrls.has(d.url))];
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+        localStorage.removeItem(LEGACY_KEY);
+        return merged;
+      }
+    }
+    return [...DEFAULT_SITES];
   } catch {
     return [...DEFAULT_SITES];
   }
