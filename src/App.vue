@@ -240,6 +240,29 @@ function removeSite(url: string, ev: MouseEvent) {
   sitesStore.remove(url);
 }
 
+// 行内改名:双击/铅笔按钮进入编辑,回车/失焦提交,Esc 取消
+const editingUrl = ref<string | null>(null);
+const editingBuffer = ref("");
+function startRenameSite(url: string, currentName: string, ev: Event) {
+  ev.stopPropagation();
+  editingUrl.value = url;
+  editingBuffer.value = currentName;
+  nextTick(() => {
+    const input = document.querySelector<HTMLInputElement>('.site-name-input');
+    input?.focus();
+    input?.select();
+  });
+}
+function commitRenameSite() {
+  if (editingUrl.value) sitesStore.rename(editingUrl.value, editingBuffer.value);
+  editingUrl.value = null;
+  editingBuffer.value = "";
+}
+function cancelRenameSite() {
+  editingUrl.value = null;
+  editingBuffer.value = "";
+}
+
 // ────── 导航 ──────
 async function goBack() {
   if (!tabs.active) return;
@@ -544,7 +567,8 @@ onMounted(async () => {
       }
     },
   );
-  // 视频站首次 play → 若开启"自动横屏",自动进应用内全屏(横屏)
+  // 视频 play → 若开启"自动横屏",自动进应用内全屏(横屏)
+  // 具体的视频尺寸/时长/宽高比过滤已在子 webview 的 init_script 里做完,主端只看总开关
   unlistenVideoPlay = await win.listen<string>(
     "web-tab-video-play",
     async (evt) => {
@@ -552,8 +576,6 @@ onMounted(async () => {
       const id = evt.payload;
       const t = tabs.tabs.find((x) => x.id === id);
       if (!t || t.mode === "fullscreen" || t.mode === "pip" || t.mode === "popout") return;
-      // 仅视频站(pipRatio=16:9 表示 tabs.ts 已识别为视频站)
-      if (t.pipRatio !== "16:9") return;
       await fullscreenInApp(id);
     },
   );
@@ -647,13 +669,34 @@ onBeforeUnmount(() => {
             v-for="s in sitesStore.sites"
             :key="s.url"
             class="site"
-            :class="{ active: activeTab?.url === s.url }"
-            @click="openSite(s.url, s)"
-            :title="s.url"
+            :class="{ active: activeTab?.url === s.url, editing: editingUrl === s.url }"
+            @click="editingUrl !== s.url && openSite(s.url, s)"
+            @dblclick.stop="startRenameSite(s.url, s.name, $event)"
+            :title="s.url + ' · 双击改名'"
           >
             <span class="icon">{{ s.icon }}</span>
-            <span class="name">{{ s.name }}</span>
-            <span class="site-x" @click="(e) => removeSite(s.url, e)" title="从快捷栏删除">×</span>
+            <input
+              v-if="editingUrl === s.url"
+              class="site-name-input"
+              v-model="editingBuffer"
+              @click.stop
+              @keydown.enter.prevent="commitRenameSite"
+              @keydown.esc.prevent="cancelRenameSite"
+              @blur="commitRenameSite"
+            />
+            <span v-else class="name">{{ s.name }}</span>
+            <span
+              v-if="editingUrl !== s.url"
+              class="site-edit"
+              @click="(e) => startRenameSite(s.url, s.name, e)"
+              title="改名"
+            >✎</span>
+            <span
+              v-if="editingUrl !== s.url"
+              class="site-x"
+              @click="(e) => removeSite(s.url, e)"
+              title="从快捷栏删除"
+            >×</span>
           </div>
         </div>
       </div>
@@ -798,7 +841,7 @@ html, body, #app {
 .site {
   position: relative;
   display: flex; align-items: center; gap: 5px;
-  padding: 5px 22px 5px 10px;
+  padding: 5px 40px 5px 10px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.03);
@@ -829,6 +872,38 @@ html, body, #app {
   transition: opacity 0.15s, background 0.15s;
 }
 .site:hover .site-x { opacity: 1; }
+.site:hover .site-edit { opacity: 1; }
+.site.editing { padding: 0; }
+.site-name-input {
+  width: 64px;
+  height: 24px;
+  margin: 2px 4px;
+  padding: 0 6px;
+  border: 1px solid #58a6ff;
+  border-radius: 10px;
+  background: rgba(13, 17, 23, 0.8);
+  color: #e6edf3;
+  font-size: 12px;
+  outline: none;
+}
+.site-edit {
+  position: absolute;
+  right: 22px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px; height: 14px;
+  line-height: 12px;
+  text-align: center;
+  border-radius: 3px;
+  font-size: 11px;
+  color: #6e7681;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+.site-edit:hover {
+  background: rgba(88, 166, 255, 0.25);
+  color: #58a6ff;
+}
 .site-x:hover {
   background: rgba(255, 100, 100, 0.3);
   color: #f85149;

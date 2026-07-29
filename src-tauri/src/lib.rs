@@ -96,9 +96,19 @@ async fn open_web_tab(
           }, true);
 
           // ── HTML5 fullscreen 拦截:改由主窗口做"应用内全屏" ──
+          //   同时把目标元素套 position:fixed 全屏样式,让视频真填满 webview
           let fakeFsEl = null;
+          let fakeFsPrev = null; // 保存原始 style,退出时还原
+          const FS_STYLE = 'position:fixed !important;left:0 !important;top:0 !important;width:100vw !important;height:100vh !important;z-index:2147483647 !important;background:#000 !important;margin:0 !important;padding:0 !important;';
           function enterFake(el) {
             fakeFsEl = el;
+            try {
+              fakeFsPrev = el.getAttribute('style') || '';
+              el.setAttribute('style', fakeFsPrev + ';' + FS_STYLE);
+              // 页面 body 禁止滚动
+              document.documentElement.style.overflow = 'hidden';
+              document.body.style.overflow = 'hidden';
+            } catch (e) {}
             try {
               Object.defineProperty(document, 'fullscreenElement', {
                 configurable: true, get: function() { return fakeFsEl; }
@@ -112,7 +122,16 @@ async fn open_web_tab(
             invoke('signal_video_fullscreen', { id: TAB_ID, entering: true });
           }
           function exitFake() {
+            try {
+              if (fakeFsEl) {
+                if (fakeFsPrev !== null) fakeFsEl.setAttribute('style', fakeFsPrev);
+                else fakeFsEl.removeAttribute('style');
+              }
+              document.documentElement.style.overflow = '';
+              document.body.style.overflow = '';
+            } catch (e) {}
             fakeFsEl = null;
+            fakeFsPrev = null;
             try {
               Object.defineProperty(document, 'fullscreenElement', {
                 configurable: true, get: function() { return null; }
@@ -138,13 +157,30 @@ async fn open_web_tab(
             if (e.key === 'Escape' && fakeFsEl) { e.stopPropagation(); exitFake(); }
           }, true);
 
-          // ── 视频首次 play → 自动横屏信号 ──
+          // ── 视频 play → 自动横屏信号(严格过滤:短视频/封面缩略图不触发) ──
+          //   条件:videoWidth ≥ 480,duration > 60s,宽高比 > 1.4(横屏)
           let videoSignaled = false;
-          document.addEventListener('play', function(e) {
+          function checkVideoForAutoFs(v) {
             if (videoSignaled) return;
-            if (e.target && e.target.tagName === 'VIDEO') {
-              videoSignaled = true;
-              invoke('signal_video_play', { id: TAB_ID });
+            if (!v || v.tagName !== 'VIDEO') return;
+            const w = v.videoWidth || 0;
+            const h = v.videoHeight || 0;
+            const d = v.duration || 0;
+            if (w < 480 || h < 1 || d < 60) return;
+            if (w / h < 1.4) return;
+            videoSignaled = true;
+            invoke('signal_video_play', { id: TAB_ID });
+          }
+          document.addEventListener('play', function(e) {
+            if (!e.target || e.target.tagName !== 'VIDEO') return;
+            // 若 metadata 还没加载,等 loadedmetadata 再判定
+            if (e.target.readyState < 1) {
+              e.target.addEventListener('loadedmetadata', function once() {
+                e.target.removeEventListener('loadedmetadata', once);
+                checkVideoForAutoFs(e.target);
+              });
+            } else {
+              checkVideoForAutoFs(e.target);
             }
           }, true);
         })();

@@ -18,6 +18,11 @@ const DEFAULT_SITES: Site[] = [
   { name: "B 站", icon: "🎬", url: "https://www.bilibili.com", builtin: true },
   { name: "小红书", icon: "📕", url: "https://www.xiaohongshu.com", builtin: true },
   { name: "知乎", icon: "💡", url: "https://www.zhihu.com", builtin: true },
+  { name: "油管", icon: "▶️", url: "https://www.youtube.com", builtin: true },
+  { name: "X", icon: "🐦", url: "https://x.com", builtin: true },
+  { name: "Reddit", icon: "👽", url: "https://www.reddit.com", builtin: true },
+  { name: "Twitch", icon: "🎮", url: "https://www.twitch.tv", builtin: true },
+  { name: "Netflix", icon: "🎞️", url: "https://www.netflix.com", builtin: true },
 ];
 
 function loadPersisted(): Site[] {
@@ -49,6 +54,12 @@ export const useSitesStore = defineStore("sites", () => {
     if (i >= 0) sites.value.splice(i, 1);
   }
 
+  /** 重命名快捷站点(按 url 定位) */
+  function rename(url: string, newName: string) {
+    const s = sites.value.find((x) => x.url === url);
+    if (s && newName.trim()) s.name = newName.trim();
+  }
+
   function resetDefaults() {
     sites.value = [...DEFAULT_SITES];
   }
@@ -72,5 +83,5 @@ export const useSitesStore = defineStore("sites", () => {
 
   const canAddCurrent = computed(() => (url: string) => !!url && !hasUrl(url));
 
-  return { sites, add, remove, resetDefaults, guessIcon, hasUrl, canAddCurrent };
+  return { sites, add, remove, rename, resetDefaults, guessIcon, hasUrl, canAddCurrent };
 });
