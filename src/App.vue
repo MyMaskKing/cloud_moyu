@@ -550,6 +550,18 @@ onMounted(async () => {
     if (!evt.payload) {
       invoke("set_all_web_tabs_opacity", { opacity: opacity.value }).catch(() => {});
       document.body.style.setProperty("--shell-alpha", "1");
+      // Rust 恢复时对 WEB_TABS 全部 show(),会露出非活跃的 inline tab;
+      // 由前端接管:让当前 active(如果是 inline)显示,其余 inline 再隐藏;popout/pip 保持
+      const cur = tabs.active;
+      if (cur && cur.mode === "inline") {
+        activateVisual(cur.id);
+      } else {
+        for (const other of tabs.tabs) {
+          if (other.mode === "inline") {
+            invoke("set_web_tab_visible", { id: other.id, visible: false }).catch(() => {});
+          }
+        }
+      }
     }
   });
   // 独立菜单窗口选中项后广播
