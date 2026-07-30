@@ -595,26 +595,47 @@ fn signal_video_fullscreen(app: AppHandle, id: String, entering: bool) -> Result
 }
 
 /// 主窗口触发:让指定 tab 里"当前正在播放的视频"进入全屏
-/// 走页面自己的 video.requestFullscreen()。init_script 已 hook 该方法,
-/// 会给视频套 position:fixed 撑满 webview,并 signal 回主窗做应用内全屏。
+/// 优先对播放器容器(YouTube #movie_player / B站 .bpx-player-container 等)调 requestFullscreen,
+/// 这样站点自己的控件(进度条/字幕/暂停)会跟着视频一起被撑满;
+/// 找不到容器再退回 video 元素本身。
+/// init_script 已 hook requestFullscreen,fake fullscreen 会给目标套 position:fixed 撑满 webview,
+/// 并 signal 回主窗做应用内全屏。
 #[tauri::command]
 fn request_video_fullscreen(app: AppHandle, id: String) -> Result<(), String> {
     let label = tab_label(&id);
     let js = r#"
         (function(){
             try {
+                // 1) 挑一个"正在播放的最大视频"
                 var vids = document.querySelectorAll('video');
-                var best = null;
+                var bestVid = null;
                 for (var i = 0; i < vids.length; i++) {
                     var v = vids[i];
                     if (v.paused) continue;
                     if ((v.videoWidth||0) < 480) continue;
-                    if (!best || (v.videoWidth * v.videoHeight) > (best.videoWidth * best.videoHeight)) {
-                        best = v;
+                    if (!bestVid || (v.videoWidth * v.videoHeight) > (bestVid.videoWidth * bestVid.videoHeight)) {
+                        bestVid = v;
                     }
                 }
-                if (best && best.requestFullscreen) best.requestFullscreen();
-                else if (best && best.webkitRequestFullscreen) best.webkitRequestFullscreen();
+                if (!bestVid) return;
+                // 2) 从 video 向上找已知播放器容器,或用 closest 通用规则
+                var SELECTORS = [
+                    '#movie_player',                 // YouTube 桌面
+                    '.html5-video-player',           // YouTube 变体
+                    '.bpx-player-container',         // B站新版
+                    '.bilibili-player',              // B站旧版
+                    '.player-container',
+                    '#player',
+                    '[data-player]'
+                ];
+                var target = null;
+                for (var j = 0; j < SELECTORS.length; j++) {
+                    var el = bestVid.closest(SELECTORS[j]);
+                    if (el) { target = el; break; }
+                }
+                target = target || bestVid;
+                if (target.requestFullscreen) target.requestFullscreen();
+                else if (target.webkitRequestFullscreen) target.webkitRequestFullscreen();
             } catch(e) {}
         })();
     "#;
