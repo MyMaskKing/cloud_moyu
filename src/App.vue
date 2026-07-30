@@ -527,7 +527,12 @@ async function restoreInline(id: string) {
   await invoke("set_web_tab_owner", { id, owner: true }).catch(() => {});
   tabs.setMode(id, "inline");
   await nextTick();
-  await activateVisual(id);
+  // 只有被收回的是当前 active 才显示;否则显式隐藏,避免旧 popout 位置留下空浮壳
+  if (tabs.activeId === id) {
+    await activateVisual(id);
+  } else {
+    await invoke("set_web_tab_visible", { id, visible: false }).catch(() => {});
+  }
   // decorations 恢复后重新 apply 透明度
   await invoke("set_web_tab_opacity", { id, opacity: effectiveOpacity.value }).catch(() => {});
 }
@@ -605,6 +610,9 @@ onMounted(async () => {
       const { id, entering } = evt.payload;
       const t = tabs.tabs.find((x) => x.id === id);
       if (!t) return;
+      // popout / pip 独立窗口:视频已通过 CSS 撑满 webview(等于窗口内全屏),
+      // 不把它拉回主窗口做"应用内全屏"
+      if (t.mode === "popout" || t.mode === "pip") return;
       if (entering) {
         if (t.mode !== "fullscreen") await fullscreenInApp(id);
       } else {
@@ -612,8 +620,11 @@ onMounted(async () => {
       }
     },
   );
-  // 视频 play → 若开启"自动横屏",自动进应用内全屏(横屏)
-  // 具体的视频尺寸/时长/宽高比过滤已在子 webview 的 init_script 里做完,主端只看总开关
+  // 视频 play → 若开启"自动横屏",让当前 tab 里的视频进入"视频全屏"
+  // 走 requestFullscreen 而非直接 fullscreenInApp:
+  //   requestFullscreen 会被子 webview 的 init_script hook,
+  //   给 video 元素套 position:fixed 撑满 webview,视频画面才是真填满
+  //   fake fullscreen 触发后会 signal 回来,由 web-tab-video-fullscreen 监听接管应用内全屏
   unlistenVideoPlay = await win.listen<string>(
     "web-tab-video-play",
     async (evt) => {
@@ -621,7 +632,7 @@ onMounted(async () => {
       const id = evt.payload;
       const t = tabs.tabs.find((x) => x.id === id);
       if (!t || t.mode === "fullscreen" || t.mode === "pip" || t.mode === "popout") return;
-      await fullscreenInApp(id);
+      await invoke("request_video_fullscreen", { id }).catch(() => {});
     },
   );
   // 全局"取消透明"快捷键:翻转 bypassOpacity;为 true 时所有 apply 走 1

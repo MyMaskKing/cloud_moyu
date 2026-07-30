@@ -28,6 +28,7 @@ commands.allow = [
     "exit_pip",
     "signal_video_play",
     "signal_video_fullscreen",
+    "request_video_fullscreen",
     "show_context_menu",
     "hide_context_menu",
     "is_hidden",

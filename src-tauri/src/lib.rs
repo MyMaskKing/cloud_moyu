@@ -160,11 +160,30 @@ async fn open_web_tab(
           }, true);
 
           // ── 视频 play → 自动横屏信号(严格过滤:短视频/封面缩略图不触发) ──
-          //   条件:videoWidth ≥ 480,duration > 60s,宽高比 > 1.4(横屏)
+          //   条件:
+          //   1. 当前 URL 是"视频播放页"(而不是首页/推荐/搜索页,避免一进站就全屏)
+          //   2. videoWidth ≥ 480,duration > 60s,宽高比 > 1.4(横屏)
+          //   SPA 站(B站/油管)切页 URL 变时,重置触发锁允许下一个视频页再触发
+          const VIDEO_PAGE_RE = /(^|\.)bilibili\.com\/(video\/|bangumi\/play\/)|(^|\.)youtube\.com\/(watch|shorts\/|embed\/)|(^|\.)douyin\.com\/(video\/|user\/[^/]+\/video)|(^|\.)iqiyi\.com\/(v_|w_|play\/)|(^|\.)v\.qq\.com\/x\/(cover|page)\/|(^|\.)youku\.com\/v(_show)?\//i;
+          function isVideoPage() {
+            try {
+              const h = location.host || '';
+              const p = location.pathname || '';
+              return VIDEO_PAGE_RE.test(h + p);
+            } catch (e) { return false; }
+          }
           let videoSignaled = false;
+          let lastUrl = location.href;
+          setInterval(function() {
+            if (location.href !== lastUrl) {
+              lastUrl = location.href;
+              videoSignaled = false;
+            }
+          }, 500);
           function checkVideoForAutoFs(v) {
             if (videoSignaled) return;
             if (!v || v.tagName !== 'VIDEO') return;
+            if (!isVideoPage()) return;
             const w = v.videoWidth || 0;
             const h = v.videoHeight || 0;
             const d = v.duration || 0;
@@ -575,6 +594,36 @@ fn signal_video_fullscreen(app: AppHandle, id: String, entering: bool) -> Result
     Ok(())
 }
 
+/// 主窗口触发:让指定 tab 里"当前正在播放的视频"进入全屏
+/// 走页面自己的 video.requestFullscreen()。init_script 已 hook 该方法,
+/// 会给视频套 position:fixed 撑满 webview,并 signal 回主窗做应用内全屏。
+#[tauri::command]
+fn request_video_fullscreen(app: AppHandle, id: String) -> Result<(), String> {
+    let label = tab_label(&id);
+    let js = r#"
+        (function(){
+            try {
+                var vids = document.querySelectorAll('video');
+                var best = null;
+                for (var i = 0; i < vids.length; i++) {
+                    var v = vids[i];
+                    if (v.paused) continue;
+                    if ((v.videoWidth||0) < 480) continue;
+                    if (!best || (v.videoWidth * v.videoHeight) > (best.videoWidth * best.videoHeight)) {
+                        best = v;
+                    }
+                }
+                if (best && best.requestFullscreen) best.requestFullscreen();
+                else if (best && best.webkitRequestFullscreen) best.webkitRequestFullscreen();
+            } catch(e) {}
+        })();
+    "#;
+    if let Some(win) = app.get_webview_window(&label) {
+        win.eval(js).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 // ────── M3: 老板键 ──────
 
 /// 让指定 web tab 静音 / 恢复。原理:eval 一段 JS,把页面里所有 <video> <audio> 的 muted 置位。
@@ -743,6 +792,7 @@ pub fn run() {
             exit_pip,
             signal_video_play,
             signal_video_fullscreen,
+            request_video_fullscreen,
             show_context_menu,
             hide_context_menu,
             is_hidden,
