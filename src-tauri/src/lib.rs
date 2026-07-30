@@ -151,9 +151,24 @@ async fn open_web_tab(
           if (proto.webkitRequestFullscreen)     proto.webkitRequestFullscreen     = function() { enterFake(this); };
           if (proto.webkitRequestFullScreen)     proto.webkitRequestFullScreen     = function() { enterFake(this); };
           if (proto.msRequestFullscreen)         proto.msRequestFullscreen         = function() { enterFake(this); };
+          // exit 同时 hook Document.prototype 和 document 实例:
+          //   YouTube/B站有时走 Document.prototype.exitFullscreen.call(document),必须原型也换
+          const dproto = Document.prototype;
+          if (dproto.exitFullscreen)       dproto.exitFullscreen       = function() { exitFake(); return Promise.resolve(); };
+          if (dproto.webkitExitFullscreen) dproto.webkitExitFullscreen = function() { exitFake(); };
+          if (dproto.msExitFullscreen)     dproto.msExitFullscreen     = function() { exitFake(); };
           document.exitFullscreen        = function() { exitFake(); return Promise.resolve(); };
           document.webkitExitFullscreen  = function() { exitFake(); };
           document.msExitFullscreen      = function() { exitFake(); };
+          // 页面读 document.fullscreen / webkitIsFullScreen 判断当前状态时也要认账
+          try {
+              Object.defineProperty(document, 'fullscreen', {
+                  configurable: true, get: function() { return !!fakeFsEl; }
+              });
+              Object.defineProperty(document, 'webkitIsFullScreen', {
+                  configurable: true, get: function() { return !!fakeFsEl; }
+              });
+          } catch (e) {}
           // 键盘 ESC / F 退出:hook keydown
           document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape' && fakeFsEl) { e.stopPropagation(); exitFake(); }

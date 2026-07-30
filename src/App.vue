@@ -426,6 +426,14 @@ function pipDefaultSize(ratio: PipRatio): { w: number; h: number } {
   return { w: 420, h: 320 };
 }
 
+/** 标题栏 ⛶ 按钮:fullscreen 下退出全屏,其它状态走画中画切换 */
+async function onPipBtnClick() {
+  const t = tabs.active;
+  if (!t) return;
+  if (t.mode === "fullscreen") return restoreInline(t.id);
+  return togglePip();
+}
+
 async function togglePip() {
   const t = tabs.active;
   if (!t) return;
@@ -513,18 +521,24 @@ async function syncFullscreenTab(id: string) {
 
 /** 回到嵌入模式 */
 async function restoreInline(id: string) {
-  await invoke("exit_pip", { id }).catch(() => {});
-  await invoke("set_web_tab_resizable", { id, resizable: false });
-  // 恢复:关系统标题栏,退出任务栏,回到主窗口子级外观
-  await invoke("set_web_tab_chrome", {
-    id,
-    decorations: false,
-    skipTaskbar: true,
-    alwaysOnTop: false,
-    title: null,
-  }).catch(() => {});
-  // 恢复 owner 关系,让主窗能控制它
-  await invoke("set_web_tab_owner", { id, owner: true }).catch(() => {});
+  const t = tabs.tabs.find((x) => x.id === id);
+  // fullscreen 模式从未改过 chrome / owner / resizable / always_on_top,
+  // 退出时不要跑那一串"恢复"调用——多余不说,某些平台上还会因窗口样式重算导致抖动
+  const fromFullscreen = t?.mode === "fullscreen";
+  if (!fromFullscreen) {
+    await invoke("exit_pip", { id }).catch(() => {});
+    await invoke("set_web_tab_resizable", { id, resizable: false });
+    // 恢复:关系统标题栏,退出任务栏,回到主窗口子级外观
+    await invoke("set_web_tab_chrome", {
+      id,
+      decorations: false,
+      skipTaskbar: true,
+      alwaysOnTop: false,
+      title: null,
+    }).catch(() => {});
+    // 恢复 owner 关系,让主窗能控制它
+    await invoke("set_web_tab_owner", { id, owner: true }).catch(() => {});
+  }
   tabs.setMode(id, "inline");
   await nextTick();
   // 只有被收回的是当前 active 才显示;否则显式隐藏,避免旧 popout 位置留下空浮壳
@@ -533,7 +547,7 @@ async function restoreInline(id: string) {
   } else {
     await invoke("set_web_tab_visible", { id, visible: false }).catch(() => {});
   }
-  // decorations 恢复后重新 apply 透明度
+  // decorations 恢复后重新 apply 透明度(fullscreen 分支没改 decorations,这里保险重新应用一次也无副作用)
   await invoke("set_web_tab_opacity", { id, opacity: effectiveOpacity.value }).catch(() => {});
 }
 
@@ -691,8 +705,10 @@ onBeforeUnmount(() => {
           class="btn"
           :class="{ toggled: activeTab && activeTab.mode !== 'inline' }"
           :disabled="!activeTab"
-          @click="togglePip"
-          :title="activeTab?.mode === 'pip' ? '退出画中画' : '画中画(小窗置顶)'"
+          @click="onPipBtnClick"
+          :title="activeTab?.mode === 'fullscreen'
+            ? '退出应用内全屏'
+            : activeTab?.mode === 'pip' ? '退出画中画' : '画中画(小窗置顶)'"
         >⛶</button>
         <button
           class="btn"
