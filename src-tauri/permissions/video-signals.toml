@@ -10,3 +10,8 @@ commands.allow = ["signal_video_play"]
 identifier = "allow-signal-video-fullscreen"
 description = "允许 remote webview 上报 HTML5 fullscreen 进入/退出"
 commands.allow = ["signal_video_fullscreen"]
+
+[[permission]]
+identifier = "allow-signal-pin-toggle"
+description = "允许 remote webview(popout 内浮动按钮)上报置顶切换"
+commands.allow = ["signal_pin_toggle"]

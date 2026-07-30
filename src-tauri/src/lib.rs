@@ -249,6 +249,131 @@ async fn open_web_tab(
               checkVideoForAutoFs(e.target);
             }
           }, true);
+
+          // ── popout 悬浮置顶按钮 ──
+          //   系统标题栏保留,页面右上角贴一个小巧半透明的 📌;可拖动改位置(存 localStorage)
+          //   仅 popout 模式显示;鼠标移开会淡出,避免长时间挡住网页
+          //   状态由主窗通过 notify_web_tab_mode → window.__muoyuOnMode 推送
+          var pinBtn = null;
+          var PIN_POS_KEY = '__muoyu_pin_pos_v1';
+          function loadPinPos() {
+            try {
+              var raw = localStorage.getItem(PIN_POS_KEY);
+              if (!raw) return null;
+              var p = JSON.parse(raw);
+              if (typeof p.right !== 'number' || typeof p.top !== 'number') return null;
+              return p;
+            } catch (e) { return null; }
+          }
+          function savePinPos(right, top) {
+            try { localStorage.setItem(PIN_POS_KEY, JSON.stringify({ right: right, top: top })); } catch (e) {}
+          }
+          function applyPinPos() {
+            if (!pinBtn) return;
+            var p = loadPinPos() || { right: 6, top: 6 };
+            // 边界限制:保证按钮完全可见
+            var maxRight = Math.max(0, (window.innerWidth || 800) - 22);
+            var maxTop = Math.max(0, (window.innerHeight || 600) - 22);
+            var r = Math.min(Math.max(p.right, 0), maxRight);
+            var t = Math.min(Math.max(p.top, 0), maxTop);
+            pinBtn.style.right = r + 'px';
+            pinBtn.style.top = t + 'px';
+            pinBtn.style.left = 'auto';
+          }
+          function ensurePinBtn() {
+            if (pinBtn) return pinBtn;
+            pinBtn = document.createElement('div');
+            pinBtn.setAttribute('data-muoyu-pin', '');
+            pinBtn.style.cssText = [
+              'position:fixed', 'top:6px', 'right:6px',
+              'width:22px', 'height:22px', 'border-radius:4px',
+              'background:rgba(22,27,34,0.55)', 'color:#c9d1d9',
+              'display:none', 'align-items:center', 'justify-content:center',
+              'font-size:11px', 'cursor:grab', 'user-select:none',
+              'z-index:2147483646', 'box-shadow:0 1px 3px rgba(0,0,0,.3)',
+              'border:1px solid rgba(255,255,255,.06)',
+              'opacity:0.35', 'transition:opacity .18s, background .15s, color .15s'
+            ].join(';') + ';';
+            pinBtn.title = '窗口置顶(可拖动)';
+            pinBtn.textContent = '📌';
+            pinBtn.__pinned = false;
+            pinBtn.addEventListener('mouseenter', function() {
+              pinBtn.style.opacity = '1';
+              if (!pinBtn.__pinned) pinBtn.style.background = 'rgba(31,111,235,.85)';
+            });
+            pinBtn.addEventListener('mouseleave', function() {
+              pinBtn.style.opacity = pinBtn.__pinned ? '1' : '0.35';
+              pinBtn.style.background = pinBtn.__pinned
+                ? 'rgba(31,111,235,.85)'
+                : 'rgba(22,27,34,0.55)';
+            });
+            // 拖拽 or 点击:mousemove 距离 > 4px 判为拖拽;否则松手时视为点击
+            var dragStart = null;
+            var didDrag = false;
+            pinBtn.addEventListener('mousedown', function(e) {
+              if (e.button !== 0) return;
+              e.preventDefault();
+              var rect = pinBtn.getBoundingClientRect();
+              dragStart = {
+                sx: e.clientX, sy: e.clientY,
+                startRight: (window.innerWidth || 800) - rect.right,
+                startTop: rect.top
+              };
+              didDrag = false;
+              pinBtn.style.cursor = 'grabbing';
+              pinBtn.style.transition = 'none';
+            });
+            document.addEventListener('mousemove', function(e) {
+              if (!dragStart) return;
+              var dx = e.clientX - dragStart.sx;
+              var dy = e.clientY - dragStart.sy;
+              if (!didDrag && Math.abs(dx) + Math.abs(dy) < 4) return;
+              didDrag = true;
+              var newRight = dragStart.startRight - dx;
+              var newTop = dragStart.startTop + dy;
+              var maxRight = Math.max(0, (window.innerWidth || 800) - 22);
+              var maxTop = Math.max(0, (window.innerHeight || 600) - 22);
+              newRight = Math.min(Math.max(newRight, 0), maxRight);
+              newTop = Math.min(Math.max(newTop, 0), maxTop);
+              pinBtn.style.right = newRight + 'px';
+              pinBtn.style.top = newTop + 'px';
+              pinBtn.style.left = 'auto';
+            }, true);
+            document.addEventListener('mouseup', function(e) {
+              if (!dragStart) return;
+              pinBtn.style.cursor = 'grab';
+              pinBtn.style.transition = 'opacity .18s, background .15s, color .15s';
+              if (didDrag) {
+                // 保存位置
+                var rect = pinBtn.getBoundingClientRect();
+                savePinPos((window.innerWidth || 800) - rect.right, rect.top);
+              } else {
+                // 未拖动 = 点击
+                var next = !pinBtn.__pinned;
+                invoke('signal_pin_toggle', { id: TAB_ID, pinned: next });
+                applyPinVisual(next);
+              }
+              dragStart = null;
+              didDrag = false;
+            }, true);
+            (document.documentElement || document.body).appendChild(pinBtn);
+            applyPinPos();
+            return pinBtn;
+          }
+          function applyPinVisual(pinned) {
+            var el = ensurePinBtn();
+            el.__pinned = pinned;
+            el.style.background = pinned ? 'rgba(31,111,235,.85)' : 'rgba(22,27,34,0.55)';
+            el.style.color = pinned ? '#fff' : '#c9d1d9';
+            el.style.opacity = pinned ? '1' : '0.35';
+            el.title = pinned ? '取消置顶(可拖动)' : '窗口置顶(可拖动)';
+          }
+          // 主窗调:window.__muoyuOnMode(mode, pinned)
+          window.__muoyuOnMode = function(mode, pinned) {
+            var el = ensurePinBtn();
+            el.style.display = (mode === 'popout') ? 'flex' : 'none';
+            applyPinVisual(!!pinned);
+          };
         })();
     "#;
     let init_script = init_script_tpl.replace("__MUOYU_TAB_ID__", &id);
@@ -815,6 +940,44 @@ fn update_transparency_shortcut(app: AppHandle, shortcut: String) -> Result<(), 
     Ok(())
 }
 
+/// 主窗口(或任意子 tab 窗口)置顶开关
+#[tauri::command]
+fn set_main_window_pinned(app: AppHandle, pinned: bool) -> Result<(), String> {
+    let main = app.get_webview_window("main").ok_or("main window missing")?;
+    main.set_always_on_top(pinned).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// popout 独立窗口置顶开关(pip 已默认置顶,不用此接口)
+#[tauri::command]
+fn set_web_tab_pinned(app: AppHandle, id: String, pinned: bool) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(&tab_label(&id)) {
+        win.set_always_on_top(pinned).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// popout 内注入按钮 → 上报给主窗 → 主窗协调置顶状态与 tabs.setPinned
+#[tauri::command]
+fn signal_pin_toggle(app: AppHandle, id: String, pinned: bool) -> Result<(), String> {
+    let _ = app.emit("web-tab-pin-toggle", serde_json::json!({ "id": id, "pinned": pinned }));
+    Ok(())
+}
+
+/// 主窗通知子 webview:当前 tab 模式(popout/inline/pip/fullscreen)+ 置顶状态,
+/// 子 webview 里的注入脚本据此显示/隐藏悬浮的置顶按钮
+#[tauri::command]
+fn notify_web_tab_mode(app: AppHandle, id: String, mode: String, pinned: bool) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(&tab_label(&id)) {
+        let js = format!(
+            "try {{ window.__muoyuOnMode && window.__muoyuOnMode({:?}, {}); }} catch(e) {{}}",
+            mode, pinned
+        );
+        let _ = win.eval(&js);
+    }
+    Ok(())
+}
+
 // ────── 入口 ──────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -881,6 +1044,10 @@ pub fn run() {
             trigger_boss_key,
             update_boss_shortcut,
             update_transparency_shortcut,
+            set_main_window_pinned,
+            set_web_tab_pinned,
+            signal_pin_toggle,
+            notify_web_tab_mode,
         ])
         .setup(move |app| {
             if let Some(win) = app.get_webview_window("main") {

@@ -35,4 +35,7 @@ commands.allow = [
     "trigger_boss_key",
     "update_boss_shortcut",
     "update_transparency_shortcut",
+    "set_main_window_pinned",
+    "set_web_tab_pinned",
+    "notify_web_tab_mode",
 ]

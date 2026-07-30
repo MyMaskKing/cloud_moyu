@@ -13,6 +13,8 @@ export interface Tab {
   icon?: string;
   mode: TabMode;
   pipRatio: PipRatio;
+  /** popout 独立窗口是否置顶(inline/fullscreen 状态无意义,pip 天然置顶) */
+  pinned?: boolean;
 }
 
 const STORAGE_KEY = "moyu-tabs-v1";
@@ -30,8 +32,8 @@ function loadPersisted(): Tab[] {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as Tab[];
-    // 载入时统一 mode 为 inline,pip 状态不持久化(窗口坐标依赖运行时)
-    return parsed.map((t) => ({ ...t, mode: "inline" as TabMode }));
+    // 载入时统一 mode 为 inline,pinned 不持久化(每次冷启动都归零)
+    return parsed.map((t) => ({ ...t, mode: "inline" as TabMode, pinned: false }));
   } catch {
     return [];
   }
@@ -72,6 +74,7 @@ export const useTabsStore = defineStore("tabs", () => {
         icon,
         mode: "inline",
         pipRatio: detectPipRatio(url, autoLandscape),
+        pinned: false,
       };
       tabs.value.push(t);
     }
@@ -102,5 +105,10 @@ export const useTabsStore = defineStore("tabs", () => {
     if (pipRatio) t.pipRatio = pipRatio;
   }
 
-  return { tabs, activeId, active, hasAny, openOrFocus, activate, closeTab, setMode };
+  function setPinned(id: string, pinned: boolean) {
+    const t = tabs.value.find((x) => x.id === id);
+    if (t) t.pinned = pinned;
+  }
+
+  return { tabs, activeId, active, hasAny, openOrFocus, activate, closeTab, setMode, setPinned };
 });

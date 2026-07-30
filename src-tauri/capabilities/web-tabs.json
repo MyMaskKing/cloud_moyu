@@ -16,6 +16,7 @@
       ]
     },
     "allow-signal-video-play",
-    "allow-signal-video-fullscreen"
+    "allow-signal-video-fullscreen",
+    "allow-signal-pin-toggle"
   ]
 }

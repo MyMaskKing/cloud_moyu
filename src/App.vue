@@ -44,6 +44,8 @@ const autoHideDelay = ref(loaded.autoHideDelay);
 const videoAutoLandscape = ref(loaded.videoAutoLandscape);
 const bossKey = ref(loaded.bossKey);
 const transparencyKey = ref(loaded.transparencyKey);
+/** 摸鱼主窗口是否置顶 */
+const mainPinned = ref(false);
 /** 透明度临时绕过:快捷键翻转;true = 强制不透明(方便操作),不改动 opacity 存的值 */
 const bypassOpacity = ref(false);
 /** 实际写到 CSS/子窗口的透明度值:bypass 时永远为 1;否则用 opacity */
@@ -97,6 +99,32 @@ useMouseAutoHide(autoHide, autoHideDelay, bypassOpacity);
 async function minimize() { await win.minimize(); }
 async function toggleMaximize() { await win.toggleMaximize(); }
 async function close() { await win.close(); }
+
+/** 切换主窗置顶 */
+async function toggleMainPin() {
+  const next = !mainPinned.value;
+  await invoke("set_main_window_pinned", { pinned: next }).catch(() => {});
+  mainPinned.value = next;
+}
+
+/** 切换 popout tab 置顶(pip 天然置顶,不处理;inline/fullscreen 无意义) */
+async function togglePopoutPin(id: string) {
+  const t = tabs.tabs.find((x) => x.id === id);
+  if (!t || t.mode !== "popout") return;
+  const next = !t.pinned;
+  await invoke("set_web_tab_pinned", { id, pinned: next }).catch(() => {});
+  tabs.setPinned(id, next);
+  // set_always_on_top 会重算 WS_EX_STYLE 冲掉 WS_EX_LAYERED,补 apply 透明度
+  await invoke("set_web_tab_opacity", { id, opacity: effectiveOpacity.value }).catch(() => {});
+  await notifyTabMode(id);
+}
+
+/** 把 tab 当前的 mode + pinned 推送给子 webview(用于内嵌浮动按钮显示/态) */
+async function notifyTabMode(id: string) {
+  const t = tabs.tabs.find((x) => x.id === id);
+  if (!t) return;
+  await invoke("notify_web_tab_mode", { id, mode: t.mode, pinned: !!t.pinned }).catch(() => {});
+}
 
 // 无边框窗口边缘 8 方向 resize 触发器
 type ResizeDir = "North" | "South" | "East" | "West" | "NorthEast" | "NorthWest" | "SouthEast" | "SouthWest";
@@ -314,7 +342,7 @@ let pendingCtxTargetId: string | null = null;
 function ctxItemsForTab(tabId: string | null): CtxItem[] {
   const t = tabId ? tabs.tabs.find((x) => x.id === tabId) : tabs.active;
   if (!t) return [];
-  return [
+  const items: CtxItem[] = [
     { key: "back",       label: "◂ 后退" },
     { key: "forward",    label: "▸ 前进" },
     { key: "reload",     label: "⟳ 刷新" },
@@ -322,9 +350,15 @@ function ctxItemsForTab(tabId: string | null): CtxItem[] {
     { key: "popout",     label: t.mode === "popout"     ? "回到摸鱼窗口" : "独立窗口",     icon: "⧉" },
     { key: "pip",        label: t.mode === "pip"        ? "回到摸鱼窗口" : "画中画",       icon: "⛶" },
     { key: "fullscreen", label: t.mode === "fullscreen" ? "退出全屏"     : "应用内全屏",   icon: "⛶" },
-    { key: "d2",         label: "",  divider: true },
-    { key: "close",      label: "关闭标签",       icon: "✕" },
   ];
+  if (t.mode === "popout") {
+    items.push({ key: "pin", label: t.pinned ? "取消置顶" : "窗口置顶", icon: "📌" });
+  }
+  items.push(
+    { key: "d2",    label: "",  divider: true },
+    { key: "close", label: "关闭标签", icon: "✕" },
+  );
+  return items;
 }
 
 /** 打开独立菜单窗口(能盖住 web-tab) */
@@ -409,11 +443,14 @@ async function pickContextMenu(key: string) {
         await invoke("set_web_tab_owner", { id: targetId, owner: false }).catch(() => {});
         tabs.setMode(targetId, "pip");
         await invoke("set_web_tab_opacity", { id: targetId, opacity: effectiveOpacity.value }).catch(() => {});
+        await notifyTabMode(targetId);
       }
       return;
     case "fullscreen":
       if (t.mode === "fullscreen") return restoreInline(targetId);
       return fullscreenInApp(targetId);
+    case "pin":
+      return togglePopoutPin(targetId);
   }
 }
 
@@ -458,6 +495,7 @@ async function togglePip() {
     tabs.setMode(t.id, "pip");
     // decorations 切换会重设 Windows 的 EX_STYLE,重新 apply 透明度
     await invoke("set_web_tab_opacity", { id: t.id, opacity: effectiveOpacity.value }).catch(() => {});
+    await notifyTabMode(t.id);
   }
 }
 
@@ -483,6 +521,7 @@ async function popOut(id?: string) {
   tabs.setMode(t.id, "popout");
   // decorations 切换后重新 apply 透明度
   await invoke("set_web_tab_opacity", { id: t.id, opacity: effectiveOpacity.value }).catch(() => {});
+  await notifyTabMode(t.id);
 }
 
 /** 应用内全屏:webview 占满整个 shell 位置(把地址栏/tabbar 遮住) */
@@ -501,6 +540,7 @@ async function fullscreenInApp(id?: string) {
   await invoke("focus_web_tab", { id: t.id }).catch(() => {});
   // 保险:fullscreen 前若从 pip/popout 过来,decorations 可能被切过,重新 apply
   await invoke("set_web_tab_opacity", { id: t.id, opacity: effectiveOpacity.value }).catch(() => {});
+  await notifyTabMode(t.id);
 }
 
 /** fullscreen 时把子窗口拉满整个 shell 内容区(去掉 titlebar) */
@@ -549,6 +589,13 @@ async function restoreInline(id: string) {
   }
   // decorations 恢复后重新 apply 透明度(fullscreen 分支没改 decorations,这里保险重新应用一次也无副作用)
   await invoke("set_web_tab_opacity", { id, opacity: effectiveOpacity.value }).catch(() => {});
+  // 从 popout/pip 回 inline:tabs.pinned 状态本身不清零(用户可能再切出去),
+  // 但当前既然回主窗,先撤掉子窗的 always_on_top,防止依附主窗后依然置顶
+  if (!fromFullscreen) {
+    await invoke("set_web_tab_pinned", { id, pinned: false }).catch(() => {});
+    tabs.setPinned(id, false);
+  }
+  await notifyTabMode(id);
 }
 
 // ────── 生命周期 ──────
@@ -558,6 +605,7 @@ let unlistenBoss: (() => void) | undefined;
 let unlistenCtx: (() => void) | undefined;
 let unlistenCloseReq: (() => void) | undefined;
 let unlistenVideoFs: (() => void) | undefined;
+let unlistenPinSignal: (() => void) | undefined;
 let unlistenVideoPlay: (() => void) | undefined;
 let unlistenTranspToggle: (() => void) | undefined;
 let ro: ResizeObserver | undefined;
@@ -657,6 +705,19 @@ onMounted(async () => {
   if (transparencyKey.value) {
     invoke("update_transparency_shortcut", { shortcut: transparencyKey.value }).catch(() => {});
   }
+  // popout 内浮动 📌 按钮点击 → 同步到主窗状态
+  unlistenPinSignal = await win.listen<{ id: string; pinned: boolean }>(
+    "web-tab-pin-toggle",
+    async (evt) => {
+      const { id, pinned } = evt.payload;
+      const t = tabs.tabs.find((x) => x.id === id);
+      if (!t || t.mode !== "popout") return;
+      await invoke("set_web_tab_pinned", { id, pinned }).catch(() => {});
+      tabs.setPinned(id, pinned);
+      // 同上:always_on_top 会冲掉 WS_EX_LAYERED,补 apply 透明度
+      await invoke("set_web_tab_opacity", { id, opacity: effectiveOpacity.value }).catch(() => {});
+    },
+  );
   isHidden.value = await invoke<boolean>("is_hidden");
 
   if (tabs.active) {
@@ -675,6 +736,7 @@ onBeforeUnmount(() => {
   unlistenVideoFs?.();
   unlistenVideoPlay?.();
   unlistenTranspToggle?.();
+  unlistenPinSignal?.();
   ro?.disconnect();
 });
 </script>
@@ -717,6 +779,12 @@ onBeforeUnmount(() => {
           title="当前 tab 操作菜单(后退/前进/独立窗口/全屏…)"
         >⋯</button>
         <button class="btn" @click="triggerBossKey" title="老板键">🚨</button>
+        <button
+          class="btn"
+          :class="{ toggled: mainPinned }"
+          @click="toggleMainPin"
+          :title="mainPinned ? '取消置顶' : '窗口置顶(Always on top)'"
+        >📌</button>
         <button class="btn" @click="showSettings = !showSettings" title="设置">⚙</button>
         <button class="btn" @click="minimize" title="最小化">—</button>
         <button class="btn" @click="toggleMaximize" title="最大化 / 还原">▢</button>
