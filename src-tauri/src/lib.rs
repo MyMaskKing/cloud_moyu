@@ -123,12 +123,18 @@ async fn open_web_tab(
             try { document.dispatchEvent(new Event('webkitfullscreenchange')); } catch (e) {}
             invoke('signal_video_fullscreen', { id: TAB_ID, entering: true });
           }
+          // 退出:先还原样式 + 派 fullscreenchange 让站点收到"退出"消息,
+          //   一次性归零站点内部状态(按钮 icon / class),
+          //   再 signal 给主窗回嵌入模式
           function exitFake() {
+            if (!fakeFsEl) {
+              // 未进 fakeFs 也让主窗保险回一次嵌入(避免 signal 漏发导致卡在 fullscreen mode)
+              try { invoke('signal_video_fullscreen', { id: TAB_ID, entering: false }); } catch (e) {}
+              return;
+            }
             try {
-              if (fakeFsEl) {
-                if (fakeFsPrev !== null) fakeFsEl.setAttribute('style', fakeFsPrev);
-                else fakeFsEl.removeAttribute('style');
-              }
+              if (fakeFsPrev !== null) fakeFsEl.setAttribute('style', fakeFsPrev);
+              else fakeFsEl.removeAttribute('style');
               document.documentElement.style.overflow = '';
               document.body.style.overflow = '';
             } catch (e) {}
@@ -189,10 +195,24 @@ async fn open_web_tab(
           }
           let videoSignaled = false;
           let lastUrl = location.href;
+          function scanPlayingVideos() {
+            if (videoSignaled) return;
+            if (!isVideoPage()) return;
+            var vids = document.querySelectorAll('video');
+            for (var i = 0; i < vids.length; i++) {
+              var v = vids[i];
+              // 已经在播放的视频:SPA 复用场景不会再派 play 事件,主动检查
+              if (!v.paused && v.readyState >= 1) checkVideoForAutoFs(v);
+            }
+          }
           setInterval(function() {
             if (location.href !== lastUrl) {
               lastUrl = location.href;
               videoSignaled = false;
+              // URL 变到视频页时,给站点点时间挂载播放器,再主动扫一次
+              setTimeout(scanPlayingVideos, 800);
+              setTimeout(scanPlayingVideos, 2000);
+              setTimeout(scanPlayingVideos, 4000);
             }
           }, 500);
           function checkVideoForAutoFs(v) {
@@ -216,6 +236,16 @@ async fn open_web_tab(
                 checkVideoForAutoFs(e.target);
               });
             } else {
+              checkVideoForAutoFs(e.target);
+            }
+          }, true);
+          // playing / timeupdate 兜底:SPA 复用 video 元素不派 play,但 timeupdate 一定会派
+          document.addEventListener('playing', function(e) {
+            if (e.target && e.target.tagName === 'VIDEO') checkVideoForAutoFs(e.target);
+          }, true);
+          document.addEventListener('timeupdate', function(e) {
+            if (videoSignaled) return;
+            if (e.target && e.target.tagName === 'VIDEO' && !e.target.paused) {
               checkVideoForAutoFs(e.target);
             }
           }, true);
@@ -610,10 +640,10 @@ fn signal_video_fullscreen(app: AppHandle, id: String, entering: bool) -> Result
 }
 
 /// 主窗口触发:让指定 tab 里"当前正在播放的视频"进入全屏
-/// 优先对播放器容器(YouTube #movie_player / B站 .bpx-player-container 等)调 requestFullscreen,
-/// 这样站点自己的控件(进度条/字幕/暂停)会跟着视频一起被撑满;
-/// 找不到容器再退回 video 元素本身。
-/// init_script 已 hook requestFullscreen,fake fullscreen 会给目标套 position:fixed 撑满 webview,
+/// 策略:优先模拟点击网站自己的全屏按钮 —— 让站点走它自己的全屏流程,
+///       样式、控件、快捷键 100% 和用户手动点击一致;
+///       找不到全屏按钮时才退回容器/video 元素 requestFullscreen。
+/// requestFullscreen 会被 init_script hook,fake fullscreen 撑满 webview,
 /// 并 signal 回主窗做应用内全屏。
 #[tauri::command]
 fn request_video_fullscreen(app: AppHandle, id: String) -> Result<(), String> {
@@ -621,7 +651,28 @@ fn request_video_fullscreen(app: AppHandle, id: String) -> Result<(), String> {
     let js = r#"
         (function(){
             try {
-                // 1) 挑一个"正在播放的最大视频"
+                // 1) 已经在 fake fullscreen 里,不重复
+                if (document.fullscreenElement || document.webkitFullscreenElement) return;
+                // 2) 优先找站点自己的全屏按钮
+                var BTN_SELECTORS = [
+                    '.ytp-fullscreen-button',                  // YouTube
+                    '.bpx-player-ctrl-full',                   // B站新版
+                    '.bilibili-player-video-btn-fullscreen',   // B站旧版
+                    'button[aria-label*="全屏"]',
+                    'button[aria-label*="Fullscreen" i]',
+                    'button[title*="全屏"]',
+                    'button[title*="Fullscreen" i]',
+                    '[data-tooltip-content*="全屏"]',
+                    '[data-purpose*="fullscreen"]'
+                ];
+                for (var i = 0; i < BTN_SELECTORS.length; i++) {
+                    var btn = document.querySelector(BTN_SELECTORS[i]);
+                    if (btn) {
+                        btn.click();
+                        return;
+                    }
+                }
+                // 3) 兜底:找播放中的最大视频,优先对其播放器容器 requestFullscreen
                 var vids = document.querySelectorAll('video');
                 var bestVid = null;
                 for (var i = 0; i < vids.length; i++) {
@@ -633,15 +684,10 @@ fn request_video_fullscreen(app: AppHandle, id: String) -> Result<(), String> {
                     }
                 }
                 if (!bestVid) return;
-                // 2) 从 video 向上找已知播放器容器,或用 closest 通用规则
                 var SELECTORS = [
-                    '#movie_player',                 // YouTube 桌面
-                    '.html5-video-player',           // YouTube 变体
-                    '.bpx-player-container',         // B站新版
-                    '.bilibili-player',              // B站旧版
-                    '.player-container',
-                    '#player',
-                    '[data-player]'
+                    '#movie_player', '.html5-video-player',
+                    '.bpx-player-container', '.bilibili-player',
+                    '.player-container', '#player', '[data-player]'
                 ];
                 var target = null;
                 for (var j = 0; j < SELECTORS.length; j++) {
