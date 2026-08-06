@@ -1054,8 +1054,11 @@ pub fn run() {
                 let _ = win.show();
                 let _ = win.set_focus();
             }
-            app.global_shortcut().register(default_boss.clone())?;
-            if let Ok(mut g) = CURRENT_BOSS_KEY.lock() {
+            // 老板键注册失败(被其它程序占用等)不能让整个应用启动崩溃:
+            // 这里改为记录失败、照常启动,用户仍可在设置里换一个快捷键。
+            if let Err(e) = app.global_shortcut().register(default_boss.clone()) {
+                eprintln!("[moyu] register default boss shortcut failed: {e}");
+            } else if let Ok(mut g) = CURRENT_BOSS_KEY.lock() {
                 *g = Some(default_boss);
             }
             Ok(())
